@@ -517,20 +517,42 @@ def main():
         required_total = v_max * 100 / limit_pct
         additional_needed = required_total - total_pnl
         p = limit_pct / 100
-        max_per_day = required_total * p  # = v_max
 
         if total_pnl > 0:
             days_needed = int(np.ceil(np.log(required_total / total_pnl) / np.log(1 + p)))
         else:
-            days_needed = int(np.ceil(additional_needed / max_per_day))
+            days_needed = int(np.ceil(additional_needed / (required_total * p)))
 
         st.warning(
             f"**Para entrar na regra de consistência você precisa de:**\n\n"
             f"- **PnL adicional necessário:** ${additional_needed:,.2f} "
             f"(atual: ${total_pnl:,.2f} → necessário: ${required_total:,.2f})\n"
-            f"- **Dias mínimos:** {days_needed} dia(s) operando no máximo "
-            f"**${max_per_day:,.2f}/dia** ({limit_pct:.0f}% de ${required_total:,.2f})"
+            f"- **Dias mínimos:** {days_needed} dia(s) com ganho máximo de "
+            f"**{limit_pct:.0f}% do total acumulado no dia anterior**"
         )
+
+        # Tabela dia a dia
+        running = total_pnl
+        plan_rows = []
+        for d in range(1, days_needed + 1):
+            max_day_pnl = running * p
+            running += max_day_pnl
+            plan_rows.append({
+                "Dia": d,
+                f"PnL máx. do dia ({limit_pct:.0f}% do total anterior)": max_day_pnl,
+                "Total acumulado após o dia": running,
+                "Regra OK?": "✅ Sim" if running >= required_total else "⏳ Não ainda",
+            })
+        df_plan = pd.DataFrame(plan_rows)
+        styled_plan = (
+            df_plan.style
+            .format({
+                f"PnL máx. do dia ({limit_pct:.0f}% do total anterior)": "${:,.2f}",
+                "Total acumulado após o dia": "${:,.2f}",
+            })
+            .map(lambda v: "color: #27ae60" if v == "✅ Sim" else ("color: #f0a500" if v == "⏳ Não ainda" else ""), subset=["Regra OK?"])
+        )
+        st.dataframe(styled_plan, use_container_width=True, hide_index=True)
 
     # ── Gráfico de saldo ─────────────────────
     chart_col, btn_col = st.columns([11, 1])
