@@ -125,9 +125,18 @@ def compute_consistency(
 # 4. VISUALIZAÇÃO
 # ─────────────────────────────────────────────
 
+def _color_pnl(val: float) -> str:
+    if val > 0:
+        return "color: #27ae60"
+    if val < 0:
+        return "color: #e74c3c"
+    return ""
+
+
 def main():
-    st.set_page_config(page_title="Trade PnL Analyzer", layout="wide")
-    st.title("📊 Consitency Rule Validator")
+    page_title = st.session_state.get("page_title", "CRV - Consistency Rule Validator")
+    st.set_page_config(page_title=page_title, layout="wide")
+    title_placeholder = st.empty()
     st.caption("Consolide resultados por data e valide a regra de consistência percentual.")
 
     # ── Upload ──────────────────────────────
@@ -137,8 +146,14 @@ def main():
     )
 
     if uploaded_file is None:
+        st.session_state.pop("page_title", None)
+        title_placeholder.title("📊 Consistency Rule Validator - CRV")
         st.info("Aguardando upload do arquivo para iniciar a análise.")
         return
+
+    file_name = uploaded_file.name.rsplit(".", 1)[0]
+    st.session_state["page_title"] = f"{file_name} - CRV"
+    title_placeholder.title(f"📊 {file_name} - CRV")
 
     # ── Leitura e validação ─────────────────
     df_raw = load_data(uploaded_file)
@@ -163,7 +178,7 @@ def main():
     with col_a:
         date_choice = st.selectbox(
             "📅 Agregar por qual data?",
-            options=["Closing Date", "Opening Date"],
+            options=["Opening Date", "Closing Date"],
             help="Escolha a coluna de data base para a consolidação diária.",
         )
 
@@ -205,20 +220,28 @@ def main():
 
     # ── Cálculos ────────────────────────────
     df_agg = aggregate_by_date(df, date_choice)
-    df_result, total_pnl = compute_consistency(df_agg, limit_pct, include_negatives)
 
-    # Aplicar filtro de positivos para exibição (não afeta os cálculos)
-    df_display = df_result[df_result["PnL do Dia"] > 0].copy() if only_positive else df_result.copy()
+    # Quando only_positive está ativo, o cálculo do total e dos % usa apenas dias positivos
+    df_agg_calc = df_agg[df_agg["PnL do Dia"] > 0].copy() if only_positive else df_agg
+    df_result, total_pnl = compute_consistency(df_agg_calc, limit_pct, include_negatives)
+
+    df_display = df_result.copy()
 
     violations = df_result["Excede Limite"].sum()
     days_above_100 = df_result[df_result["PnL do Dia"] > 100]
 
     # ── Métricas no topo ────────────────────
+    consistency_ok = violations == 0
     st.divider()
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Total de Trades", len(df))
     m2.metric("Dias com Operação", len(df_result))
-    m3.metric("PnL Total Geral", f"{total_pnl:,.2f}")
+    m3.metric(
+        "PnL Total Geral",
+        f"{total_pnl:,.2f}",
+        delta=f"{limit_pct:.0f}% = {total_pnl * limit_pct / 100:,.2f}",
+        delta_color="off",
+    )
     m4.metric(
         "Dias que Excedem o Limite",
         int(violations),
@@ -226,19 +249,23 @@ def main():
         delta_color="inverse" if violations > 0 else "off",
     )
     m5.metric("Dias acima de $100", len(days_above_100))
+    m6.metric(
+        "Regra de Consistência",
+        "✅ Dentro" if consistency_ok else "🔴 Violada",
+    )
 
     # ── Tabela consolidada ──────────────────
     st.subheader("📋 Resultado Consolidado por Data")
 
     display_df = df_display.copy()
-    display_df["PnL do Dia"] = display_df["PnL do Dia"].map(lambda x: f"{x:,.2f}")
     display_df["% do Total"] = display_df["% do Total"].map(lambda x: f"{x:.2f}%")
     display_df["Excede Limite"] = display_df["Excede Limite"].map(
         lambda x: "🔴 Sim" if x else "✅ Não"
     )
     display_df = display_df.rename(columns={"Excede Limite": f"Excede {limit_pct:.0f}%?"})
+    styled = display_df.style.format({"PnL do Dia": "{:,.2f}"}).map(_color_pnl, subset=["PnL do Dia"])
 
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(styled, use_container_width=True, hide_index=True)
 
     # ── Gráfico ─────────────────────────────
     st.subheader("📈 PnL por Dia")
@@ -250,10 +277,10 @@ def main():
         st.subheader("💰 Dias com PnL acima de $100")
         if len(days_above_100) > 0:
             above_df = days_above_100.copy()
-            above_df["PnL do Dia"] = above_df["PnL do Dia"].map(lambda x: f"{x:,.2f}")
             above_df["% do Total"] = above_df["% do Total"].map(lambda x: f"{x:.2f}%")
             above_df = above_df.drop(columns=["Excede Limite"])
-            st.dataframe(above_df, use_container_width=True, hide_index=True)
+            styled_above = above_df.style.format({"PnL do Dia": "{:,.2f}"}).map(_color_pnl, subset=["PnL do Dia"])
+            st.dataframe(styled_above, use_container_width=True, hide_index=True)
         else:
             st.info("Nenhum dia teve PnL consolidado acima de $100.")
 
@@ -261,10 +288,10 @@ def main():
     if violations > 0:
         st.subheader(f"🚨 Dias que excedem {limit_pct:.0f}% do total")
         violating = df_result[df_result["Excede Limite"]].copy()
-        violating["PnL do Dia"] = violating["PnL do Dia"].map(lambda x: f"{x:,.2f}")
         violating["% do Total"] = violating["% do Total"].map(lambda x: f"{x:.2f}%")
         violating = violating.drop(columns=["Excede Limite"])
-        st.dataframe(violating, use_container_width=True, hide_index=True)
+        styled_viol = violating.style.format({"PnL do Dia": "{:,.2f}"}).map(_color_pnl, subset=["PnL do Dia"])
+        st.dataframe(styled_viol, use_container_width=True, hide_index=True)
     else:
         st.success(f"Nenhum dia excedeu o limite de {limit_pct:.0f}% do total.")
 
