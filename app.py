@@ -1,4 +1,5 @@
 import io
+import json
 import types
 from pathlib import Path
 
@@ -131,6 +132,22 @@ def compute_consistency(
 # ─────────────────────────────────────────────
 # 4. VISUALIZAÇÃO
 # ─────────────────────────────────────────────
+
+def _load_settings(stem: str) -> dict:
+    p = UPLOADS_DIR / f"{stem}.json"
+    try:
+        return json.loads(p.read_text()) if p.exists() else {}
+    except Exception:
+        return {}
+
+
+def _save_settings(stem: str, account_k: float, drawdown_k: float, profit_k: float) -> None:
+    (UPLOADS_DIR / f"{stem}.json").write_text(json.dumps({
+        "account_value_k": account_k,
+        "max_drawdown_k":  drawdown_k,
+        "profit_target_k": profit_k,
+    }))
+
 
 def _make_file_like(path: Path):
     """Cria um objeto file-like a partir de um arquivo local, compatível com load_data()."""
@@ -302,6 +319,17 @@ def main():
     st.session_state["page_title"] = f"{file_name} - CRV"
     title_placeholder.title(f"📊 {file_name} - CRV")
 
+    # ── Configurações persistidas por arquivo ─
+    _init_key = f"_cfg_{file_name}"
+    # Recarrega do JSON sempre que trocar de planilha ou na primeira visita
+    if _init_key not in st.session_state or st.session_state.get("_last_file") != file_name:
+        s = _load_settings(file_name)
+        st.session_state[f"{file_name}_account_k"]  = float(s.get("account_value_k", 0.0))
+        st.session_state[f"{file_name}_drawdown_k"] = float(s.get("max_drawdown_k",  0.0))
+        st.session_state[f"{file_name}_profit_k"]   = float(s.get("profit_target_k", 0.0))
+        st.session_state[_init_key] = True
+    st.session_state["_last_file"] = file_name
+
     # ── Leitura e validação ─────────────────
     df_raw = load_data(file_source)
     missing = validate_columns(df_raw)
@@ -320,6 +348,15 @@ def main():
 
     # ── Parâmetros principais ───────────────
     st.divider()
+    # _btn_col, _ = st.columns([1, 5])
+    # with _btn_col:
+    #     if st.button("📂 Carregar configurações salvas", help="Recarrega Saldo, Drawdown e Profit do arquivo JSON"):
+    #         s = _load_settings(file_name)
+    #         st.session_state[f"{file_name}_account_k"]  = float(s.get("account_value_k", 0.0))
+    #         st.session_state[f"{file_name}_drawdown_k"] = float(s.get("max_drawdown_k",  0.0))
+    #         st.session_state[f"{file_name}_profit_k"]   = float(s.get("profit_target_k", 0.0))
+    #         st.rerun()
+
     col_a, col_b, col_c = st.columns([1, 1, 1])
 
     with col_a:
@@ -333,10 +370,10 @@ def main():
         account_value_k = st.number_input(
             "💰 Valor inicial da conta (em milhares)",
             min_value=0.0,
-            value=0.0,
             step=1.0,
             format="%.0f",
             help="Digite o valor em milhares. Ex: 25 = $25.000",
+            key=f"{file_name}_account_k",
         )
         account_value = account_value_k * 1_000
 
@@ -355,22 +392,26 @@ def main():
         max_drawdown_k = st.number_input(
             "📉 Drawdown máximo (em milhares)",
             min_value=0.0,
-            value=0.0,
             step=1.0,
             format="%.2f",
             help="Valor abaixo do inicial. Ex: 4 = $4.000 abaixo → linha em $146.000 (conta de $150k)",
+            key=f"{file_name}_drawdown_k",
         )
         max_drawdown_val = account_value - max_drawdown_k * 1_000 if max_drawdown_k > 0 else None
     with col_e:
         profit_target_k = st.number_input(
             "🎯 Meta de lucro (em milhares)",
             min_value=0.0,
-            value=0.0,
             step=1.0,
             format="%.2f",
             help="Valor acima do inicial. Ex: 9 = $9.000 acima → linha em $159.000 (conta de $150k)",
+            key=f"{file_name}_profit_k",
         )
         profit_target_val = account_value + profit_target_k * 1_000 if profit_target_k > 0 else None
+
+    if st.button("💾 Salvar configurações", help="Salva Saldo, Drawdown e Profit para esta planilha"):
+        _save_settings(file_name, account_value_k, max_drawdown_k, profit_target_k)
+        st.toast("Configurações salvas!", icon="✅")
 
     # ── Toggles ─────────────────────────────
     st.divider()
@@ -394,7 +435,7 @@ def main():
     with tog3:
         show_above_100 = st.toggle(
             "Destacar dias acima de $100",
-            value=True,
+            value=False,
             help="Exibe uma seção separada listando os dias com PnL consolidado acima de $100.",
         )
 
