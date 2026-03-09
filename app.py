@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
 
 # ─────────────────────────────────────────────
 # 1. LEITURA DE DADOS
@@ -125,6 +126,105 @@ def compute_consistency(
 # 4. VISUALIZAÇÃO
 # ─────────────────────────────────────────────
 
+def _build_segments(dates: list, balances: list, threshold: float) -> list:
+    """Divide a série em segmentos verde/vermelho conforme cruzam o threshold."""
+    segments = []
+    seg_x = [dates[0]]
+    seg_y = [balances[0]]
+    current_above = balances[0] >= threshold
+
+    for i in range(1, len(dates)):
+        prev_above = balances[i - 1] >= threshold
+        curr_above = balances[i] >= threshold
+
+        if prev_above != curr_above and balances[i] != balances[i - 1]:
+            # Ponto de cruzamento interpolado
+            t = (threshold - balances[i - 1]) / (balances[i] - balances[i - 1])
+            cross_x = dates[i - 1] + (dates[i] - dates[i - 1]) * t
+            seg_x.append(cross_x)
+            seg_y.append(threshold)
+            segments.append((list(seg_x), list(seg_y), "#27ae60" if current_above else "#e74c3c"))
+            current_above = curr_above
+            seg_x = [cross_x, dates[i]]
+            seg_y = [threshold, balances[i]]
+        else:
+            seg_x.append(dates[i])
+            seg_y.append(balances[i])
+
+    segments.append((list(seg_x), list(seg_y), "#27ae60" if current_above else "#e74c3c"))
+    return segments
+
+
+def build_balance_chart(
+    trade_dates,
+    daily_pnl_values,
+    initial_balance: float,
+    max_drawdown: float | None = None,
+    profit_target: float | None = None,
+) -> go.Figure:
+    """Gráfico de saldo acumulado estilo drawdown de prop firms."""
+    dates_dt = pd.to_datetime(trade_dates, format="%d/%m/%Y")
+    start_date = dates_dt.iloc[0] - pd.Timedelta(days=1)
+    all_dates = [start_date] + list(dates_dt)
+    cum_pnl = [0.0] + list(pd.Series(list(daily_pnl_values)).cumsum())
+    balances = [initial_balance + c for c in cum_pnl]
+
+    segments = _build_segments(all_dates, balances, initial_balance)
+
+    fig = go.Figure()
+    seen_colors: set = set()
+    for seg_x, seg_y, color in segments:
+        name = "Acima do Inicial" if color == "#27ae60" else "Abaixo do Inicial"
+        show_legend = color not in seen_colors
+        seen_colors.add(color)
+        fig.add_trace(go.Scatter(
+            x=seg_x,
+            y=seg_y,
+            mode="lines",
+            line=dict(color=color, width=2),
+            name=name,
+            showlegend=show_legend,
+            hovertemplate="%{x|%d/%m/%Y}<br><b>$%{y:,.2f}</b><extra></extra>",
+        ))
+
+    fig.add_hline(
+        y=initial_balance,
+        line_dash="dot", line_color="#888888", line_width=1.5,
+        annotation_text=f"  Initial Balance: ${initial_balance:,.2f}",
+        annotation_position="top left",
+        annotation_font_color="#aaaaaa",
+    )
+    if max_drawdown is not None:
+        fig.add_hline(
+            y=max_drawdown,
+            line_dash="dot", line_color="#e74c3c", line_width=1.5,
+            annotation_text=f"  Max Drawdown: ${max_drawdown:,.2f}",
+            annotation_position="bottom left",
+            annotation_font_color="#e74c3c",
+        )
+    if profit_target is not None:
+        fig.add_hline(
+            y=profit_target,
+            line_dash="dot", line_color="#27ae60", line_width=1.5,
+            annotation_text=f"  Profit Target: ${profit_target:,.2f}",
+            annotation_position="top left",
+            annotation_font_color="#27ae60",
+        )
+
+    fig.update_layout(
+        paper_bgcolor="#0e1117",
+        plot_bgcolor="#0e1117",
+        font=dict(color="#fafafa", size=12),
+        xaxis=dict(gridcolor="#1e2030", showgrid=True, tickformat="%d/%m/%Y", title=""),
+        yaxis=dict(gridcolor="#1e2030", showgrid=True, tickprefix="$", tickformat=",.2f", title="Saldo"),
+        hovermode="x unified",
+        legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#444", borderwidth=1),
+        margin=dict(l=20, r=20, t=30, b=20),
+        height=420,
+    )
+    return fig
+
+
 def _color_pnl(val: float) -> str:
     if val > 0:
         return "color: #27ae60"
@@ -188,8 +288,8 @@ def main():
             min_value=0.0,
             value=0.0,
             step=1.0,
-            format="%.2f",
-            help="Digite o valor em milhares. Ex: 25 = $25.000,00",
+            format="%.0f",
+            help="Digite o valor em milhares. Ex: 25 = $25.000",
         )
         account_value = account_value_k * 1_000
 
@@ -202,6 +302,28 @@ def main():
             step=1.0,
             help="Dias cujo PnL represente mais do que este percentual do total serão sinalizados.",
         )
+
+    col_d, col_e, _ = st.columns([1, 1, 1])
+    with col_d:
+        max_drawdown_k = st.number_input(
+            "📉 Drawdown máximo (em milhares)",
+            min_value=0.0,
+            value=0.0,
+            step=1.0,
+            format="%.2f",
+            help="Valor abaixo do inicial. Ex: 4 = $4.000 abaixo → linha em $146.000 (conta de $150k)",
+        )
+        max_drawdown_val = account_value - max_drawdown_k * 1_000 if max_drawdown_k > 0 else None
+    with col_e:
+        profit_target_k = st.number_input(
+            "🎯 Meta de lucro (em milhares)",
+            min_value=0.0,
+            value=0.0,
+            step=1.0,
+            format="%.2f",
+            help="Valor acima do inicial. Ex: 9 = $9.000 acima → linha em $159.000 (conta de $150k)",
+        )
+        profit_target_val = account_value + profit_target_k * 1_000 if profit_target_k > 0 else None
 
     # ── Toggles ─────────────────────────────
     st.divider()
@@ -322,10 +444,24 @@ def main():
             f"**${max_per_day:,.2f}/dia** ({limit_pct:.0f}% de ${required_total:,.2f})"
         )
 
-    # ── Gráfico ─────────────────────────────
-    st.subheader("📈 PnL por Dia")
-    chart_df = df_display.set_index("Data")[["PnL do Dia"]].copy()
-    st.bar_chart(chart_df, color="#4C78A8")
+    # ── Gráfico de saldo ─────────────────────
+    chart_col, btn_col = st.columns([11, 1])
+    with chart_col:
+        st.subheader("📈 Acompanhamento de Saldo")
+    with btn_col:
+        st.write("")
+        st.write("")
+        if st.button("🔄", help="Atualizar gráfico"):
+            st.rerun()
+
+    fig = build_balance_chart(
+        trade_dates=df_agg["Data"],
+        daily_pnl_values=df_agg["PnL do Dia"],
+        initial_balance=account_value,
+        max_drawdown=max_drawdown_val,
+        profit_target=profit_target_val,
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
     # ── Dias acima de $100 ──────────────────
     if show_above_100:
