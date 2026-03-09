@@ -244,10 +244,24 @@ def main():
     # ── Métricas no topo ────────────────────
     consistency_ok = violations == 0
     balance = account_value + total_pnl
+
+    if include_negatives:
+        current_max_pct = df_result["% do Total"].abs().max()
+    else:
+        _pos = df_result[df_result["PnL do Dia"] > 0]
+        current_max_pct = _pos["% do Total"].max() if len(_pos) > 0 else 0.0
+
     st.divider()
-    m1, m2, m3, m3b, m4, m5, m6 = st.columns(7)
+    m1, m2, m2b, m3, m3b, m4, m5, m6 = st.columns(8)
     m1.metric("Total de Trades", len(df))
     m2.metric("Dias com Operação", len(df_result))
+    diff_pct = current_max_pct - limit_pct
+    m2b.metric(
+        "Consistência Atual",
+        f"{current_max_pct:.2f}%",
+        delta=f"{diff_pct:+.2f}% vs {limit_pct:.0f}%",
+        delta_color="inverse",
+    )
     m3.metric(
         "PnL Total Geral",
         f"{total_pnl:,.2f}",
@@ -285,6 +299,28 @@ def main():
     styled = display_df.style.format({"PnL do Dia": "{:,.2f}"}).map(_color_pnl, subset=["PnL do Dia"])
 
     st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    # ── Plano de recuperação ─────────────────
+    if not consistency_ok:
+        violating_days = df_result[df_result["Excede Limite"]]
+        v_max = violating_days["PnL do Dia"].max()
+        required_total = v_max * 100 / limit_pct
+        additional_needed = required_total - total_pnl
+        p = limit_pct / 100
+        max_per_day = required_total * p  # = v_max
+
+        if total_pnl > 0:
+            days_needed = int(np.ceil(np.log(required_total / total_pnl) / np.log(1 + p)))
+        else:
+            days_needed = int(np.ceil(additional_needed / max_per_day))
+
+        st.warning(
+            f"**Para entrar na regra de consistência você precisa de:**\n\n"
+            f"- **PnL adicional necessário:** ${additional_needed:,.2f} "
+            f"(atual: ${total_pnl:,.2f} → necessário: ${required_total:,.2f})\n"
+            f"- **Dias mínimos:** {days_needed} dia(s) operando no máximo "
+            f"**${max_per_day:,.2f}/dia** ({limit_pct:.0f}% de ${required_total:,.2f})"
+        )
 
     # ── Gráfico ─────────────────────────────
     st.subheader("📈 PnL por Dia")
