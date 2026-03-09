@@ -1,4 +1,4 @@
-# Trade PnL Analyzer
+# Consistency Rule Validator
 
 Aplicação local em Streamlit para consolidação e análise de consistência de trades.
 
