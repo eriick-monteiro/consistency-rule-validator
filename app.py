@@ -173,7 +173,7 @@ def main():
 
     # ── Parâmetros principais ───────────────
     st.divider()
-    col_a, col_b = st.columns([1, 1])
+    col_a, col_b, col_c = st.columns([1, 1, 1])
 
     with col_a:
         date_choice = st.selectbox(
@@ -183,6 +183,17 @@ def main():
         )
 
     with col_b:
+        account_value_k = st.number_input(
+            "💰 Valor inicial da conta (em milhares)",
+            min_value=0.0,
+            value=0.0,
+            step=1.0,
+            format="%.2f",
+            help="Digite o valor em milhares. Ex: 25 = $25.000,00",
+        )
+        account_value = account_value_k * 1_000
+
+    with col_c:
         limit_pct = st.number_input(
             "⚠️ Limite de consistência (%)",
             min_value=1.0,
@@ -232,8 +243,9 @@ def main():
 
     # ── Métricas no topo ────────────────────
     consistency_ok = violations == 0
+    balance = account_value + total_pnl
     st.divider()
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1, m2, m3, m3b, m4, m5, m6 = st.columns(7)
     m1.metric("Total de Trades", len(df))
     m2.metric("Dias com Operação", len(df_result))
     m3.metric(
@@ -242,6 +254,13 @@ def main():
         delta=f"{limit_pct:.0f}% = {total_pnl * limit_pct / 100:,.2f}",
         delta_color="off",
     )
+    if account_value > 0:
+        m3b.metric(
+            "Saldo da Conta",
+            f"{balance:,.2f}",
+            delta=f"{total_pnl:+,.2f}",
+            delta_color="normal",
+        )
     m4.metric(
         "Dias que Excedem o Limite",
         int(violations),
