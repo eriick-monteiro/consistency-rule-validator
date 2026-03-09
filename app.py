@@ -1,7 +1,13 @@
+import io
+import types
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+
+UPLOADS_DIR = Path(__file__).parent / "uploads"
 
 # ─────────────────────────────────────────────
 # 1. LEITURA DE DADOS
@@ -126,6 +132,14 @@ def compute_consistency(
 # 4. VISUALIZAÇÃO
 # ─────────────────────────────────────────────
 
+def _make_file_like(path: Path):
+    """Cria um objeto file-like a partir de um arquivo local, compatível com load_data()."""
+    data = path.read_bytes()
+    buf = io.BytesIO(data)
+    obj = types.SimpleNamespace(name=path.name, read=buf.read, seek=buf.seek)
+    return obj
+
+
 def _build_segments(dates: list, balances: list, threshold: float) -> list:
     """Divide a série em segmentos verde/vermelho conforme cruzam o threshold."""
     segments = []
@@ -239,24 +253,57 @@ def main():
     title_placeholder = st.empty()
     st.caption("Consolide resultados por data e valide a regra de consistência percentual.")
 
-    # ── Upload ──────────────────────────────
-    uploaded_file = st.file_uploader(
-        "Faça o upload da planilha de trades (.csv ou .xlsx)",
-        type=["csv", "xlsx"],
+    # ── Sidebar: planilhas salvas ────────────
+    UPLOADS_DIR.mkdir(exist_ok=True)
+    saved_files = sorted(
+        list(UPLOADS_DIR.glob("*.csv")) + list(UPLOADS_DIR.glob("*.xlsx")),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
     )
 
-    if uploaded_file is None:
+    with st.sidebar:
+        st.header("📁 Planilhas Salvas")
+        options = ["⬆️ Novo upload"] + [f.name for f in saved_files]
+        sidebar_choice = st.radio("", options, label_visibility="collapsed")
+
+        if sidebar_choice != "⬆️ Novo upload":
+            st.divider()
+            if st.button("🗑️ Remover planilha", use_container_width=True):
+                (UPLOADS_DIR / sidebar_choice).unlink(missing_ok=True)
+                st.rerun()
+
+    # ── Fonte do arquivo ─────────────────────
+    file_source = None
+    file_name = None
+
+    if sidebar_choice == "⬆️ Novo upload":
+        uploaded_file = st.file_uploader(
+            "Faça o upload da planilha de trades (.csv ou .xlsx)",
+            type=["csv", "xlsx"],
+        )
+        if uploaded_file is not None:
+            save_path = UPLOADS_DIR / uploaded_file.name
+            save_path.write_bytes(uploaded_file.read())
+            uploaded_file.seek(0)
+            file_source = uploaded_file
+            file_name = uploaded_file.name.rsplit(".", 1)[0]
+    else:
+        selected_path = UPLOADS_DIR / sidebar_choice
+        if selected_path.exists():
+            file_source = _make_file_like(selected_path)
+            file_name = selected_path.stem
+
+    if file_source is None:
         st.session_state.pop("page_title", None)
         title_placeholder.title("📊 Consistency Rule Validator - CRV")
         st.info("Aguardando upload do arquivo para iniciar a análise.")
         return
 
-    file_name = uploaded_file.name.rsplit(".", 1)[0]
     st.session_state["page_title"] = f"{file_name} - CRV"
     title_placeholder.title(f"📊 {file_name} - CRV")
 
     # ── Leitura e validação ─────────────────
-    df_raw = load_data(uploaded_file)
+    df_raw = load_data(file_source)
     missing = validate_columns(df_raw)
     if missing:
         st.error(f"Colunas obrigatórias ausentes: **{', '.join(missing)}**")
