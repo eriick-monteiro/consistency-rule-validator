@@ -141,11 +141,12 @@ def _load_settings(stem: str) -> dict:
         return {}
 
 
-def _save_settings(stem: str, account_k: float, drawdown_k: float, profit_k: float) -> None:
+def _save_settings(stem: str, account_k: float, drawdown_k: float, profit_k: float, daily_dd_k: float) -> None:
     (UPLOADS_DIR / f"{stem}.json").write_text(json.dumps({
-        "account_value_k": account_k,
-        "max_drawdown_k":  drawdown_k,
-        "profit_target_k": profit_k,
+        "account_value_k":   account_k,
+        "max_drawdown_k":    drawdown_k,
+        "profit_target_k":   profit_k,
+        "daily_drawdown_k":  daily_dd_k,
     }))
 
 
@@ -192,6 +193,7 @@ def build_balance_chart(
     initial_balance: float,
     max_drawdown: float | None = None,
     profit_target: float | None = None,
+    daily_drawdown: float | None = None,
 ) -> go.Figure:
     """Gráfico de saldo acumulado estilo drawdown de prop firms."""
     dates_dt = pd.to_datetime(trade_dates, format="%d/%m/%Y")
@@ -241,12 +243,108 @@ def build_balance_chart(
             annotation_position="top left",
             annotation_font_color="#27ae60",
         )
+    if daily_drawdown is not None:
+        fig.add_hline(
+            y=daily_drawdown,
+            line_dash="dot", line_color="#e67e22", line_width=1.5,
+            annotation_text=f"  Daily Drawdown: ${daily_drawdown:,.2f}",
+            annotation_position="bottom left",
+            annotation_font_color="#e67e22",
+        )
 
     fig.update_layout(
         paper_bgcolor="#0e1117",
         plot_bgcolor="#0e1117",
         font=dict(color="#fafafa", size=12),
         xaxis=dict(gridcolor="#1e2030", showgrid=True, tickformat="%d/%m/%Y", title=""),
+        yaxis=dict(gridcolor="#1e2030", showgrid=True, tickprefix="$", tickformat=",.2f", title="Saldo"),
+        hovermode="x unified",
+        legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#444", borderwidth=1),
+        margin=dict(l=20, r=20, t=30, b=20),
+        height=420,
+    )
+    return fig
+
+
+def build_trade_chart(
+    df_trades: pd.DataFrame,
+    date_col: str,
+    initial_balance: float,
+    max_drawdown: float | None = None,
+    profit_target: float | None = None,
+    daily_drawdown: float | None = None,
+) -> go.Figure:
+    """Gráfico de saldo acumulado por operação individual."""
+    df_sorted = df_trades.sort_values(date_col).reset_index(drop=True)
+    pnl_vals = df_sorted["Trade PnL"].tolist()
+    date_labels = ["Início"] + [
+        d.strftime("%d/%m/%Y") for d in df_sorted[date_col]
+    ]
+
+    indices = list(range(len(pnl_vals) + 1))
+    cum_pnl = [0.0] + list(pd.Series(pnl_vals).cumsum())
+    balances = [initial_balance + c for c in cum_pnl]
+
+    segments = _build_segments(indices, balances, initial_balance)
+
+    fig = go.Figure()
+    seen_colors: set = set()
+    for seg_x, seg_y, color in segments:
+        name = "Acima do Inicial" if color == "#27ae60" else "Abaixo do Inicial"
+        show_legend = color not in seen_colors
+        seen_colors.add(color)
+        hover_text = [
+            date_labels[int(x)] if x == int(x) and int(x) < len(date_labels) else ""
+            for x in seg_x
+        ]
+        fig.add_trace(go.Scatter(
+            x=seg_x,
+            y=seg_y,
+            mode="lines",
+            line=dict(color=color, width=2),
+            name=name,
+            showlegend=show_legend,
+            text=hover_text,
+            hovertemplate="Trade %{x:.0f} — %{text}<br><b>$%{y:,.2f}</b><extra></extra>",
+        ))
+
+    fig.add_hline(
+        y=initial_balance,
+        line_dash="dot", line_color="#888888", line_width=1.5,
+        annotation_text=f"  Initial Balance: ${initial_balance:,.2f}",
+        annotation_position="top left",
+        annotation_font_color="#aaaaaa",
+    )
+    if max_drawdown is not None:
+        fig.add_hline(
+            y=max_drawdown,
+            line_dash="dot", line_color="#e74c3c", line_width=1.5,
+            annotation_text=f"  Max Drawdown: ${max_drawdown:,.2f}",
+            annotation_position="bottom left",
+            annotation_font_color="#e74c3c",
+        )
+    if profit_target is not None:
+        fig.add_hline(
+            y=profit_target,
+            line_dash="dot", line_color="#27ae60", line_width=1.5,
+            annotation_text=f"  Profit Target: ${profit_target:,.2f}",
+            annotation_position="top left",
+            annotation_font_color="#27ae60",
+        )
+    if daily_drawdown is not None:
+        fig.add_hline(
+            y=daily_drawdown,
+            line_dash="dot", line_color="#e67e22", line_width=1.5,
+            annotation_text=f"  Daily Drawdown: ${daily_drawdown:,.2f}",
+            annotation_position="bottom left",
+            annotation_font_color="#e67e22",
+        )
+
+    fig.update_layout(
+        paper_bgcolor="#0e1117",
+        plot_bgcolor="#0e1117",
+        font=dict(color="#fafafa", size=12),
+        xaxis=dict(gridcolor="#1e2030", showgrid=True, title="Trade #"),
         yaxis=dict(gridcolor="#1e2030", showgrid=True, tickprefix="$", tickformat=",.2f", title="Saldo"),
         hovermode="x unified",
         legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#444", borderwidth=1),
@@ -324,9 +422,10 @@ def main():
     # Recarrega do JSON sempre que trocar de planilha ou na primeira visita
     if _init_key not in st.session_state or st.session_state.get("_last_file") != file_name:
         s = _load_settings(file_name)
-        st.session_state[f"{file_name}_account_k"]  = float(s.get("account_value_k", 0.0))
-        st.session_state[f"{file_name}_drawdown_k"] = float(s.get("max_drawdown_k",  0.0))
-        st.session_state[f"{file_name}_profit_k"]   = float(s.get("profit_target_k", 0.0))
+        st.session_state[f"{file_name}_account_k"]   = float(s.get("account_value_k",  0.0))
+        st.session_state[f"{file_name}_drawdown_k"] = float(s.get("max_drawdown_k",   0.0))
+        st.session_state[f"{file_name}_profit_k"]   = float(s.get("profit_target_k",  0.0))
+        st.session_state[f"{file_name}_daily_dd_k"] = float(s.get("daily_drawdown_k", 0.0))
         st.session_state[_init_key] = True
     st.session_state["_last_file"] = file_name
 
@@ -387,7 +486,7 @@ def main():
             help="Dias cujo PnL represente mais do que este percentual do total serão sinalizados.",
         )
 
-    col_d, col_e, _ = st.columns([1, 1, 1])
+    col_d, col_e, col_f = st.columns([1, 1, 1])
     with col_d:
         max_drawdown_k = st.number_input(
             "📉 Drawdown máximo (em milhares)",
@@ -408,9 +507,19 @@ def main():
             key=f"{file_name}_profit_k",
         )
         profit_target_val = account_value + profit_target_k * 1_000 if profit_target_k > 0 else None
+    with col_f:
+        daily_drawdown_k = st.number_input(
+            "🟠 Drawdown diário (em milhares)",
+            min_value=0.0,
+            step=1.0,
+            format="%.2f",
+            help="Perda máxima permitida por dia. Ex: 1 = $1.000 abaixo do inicial → linha laranja no gráfico.",
+            key=f"{file_name}_daily_dd_k",
+        )
+        daily_drawdown_val = account_value - daily_drawdown_k * 1_000 if daily_drawdown_k > 0 else None
 
     if st.button("💾 Salvar configurações", help="Salva Saldo, Drawdown e Profit para esta planilha"):
-        _save_settings(file_name, account_value_k, max_drawdown_k, profit_target_k)
+        _save_settings(file_name, account_value_k, max_drawdown_k, profit_target_k, daily_drawdown_k)
         st.toast("Configurações salvas!", icon="✅")
 
     # ── Toggles ─────────────────────────────
@@ -462,6 +571,13 @@ def main():
         current_max_pct = _pos["% do Total"].max() if len(_pos) > 0 else 0.0
 
     st.divider()
+    st.markdown("""
+<style>
+[data-testid="stMetricLabel"] { font-size: 20px !important; }
+[data-testid="stMetricValue"] { font-size: 30px !important; }
+[data-testid="stMetricDelta"] { font-size: 12px !important; }
+</style>
+""", unsafe_allow_html=True)
     m1, m2, m2b, m3, m3b, m4, m5, m6 = st.columns(8)
     m1.metric("Total de Trades", len(df))
     m2.metric("Dias com Operação", len(df_result))
@@ -555,22 +671,36 @@ def main():
         st.dataframe(styled_plan, use_container_width=True, hide_index=True)
 
     # ── Gráfico de saldo ─────────────────────
-    chart_col, btn_col = st.columns([11, 1])
+    chart_col, tog_col, btn_col = st.columns([8, 2, 1])
     with chart_col:
         st.subheader("📈 Acompanhamento de Saldo")
+    with tog_col:
+        st.write("")
+        per_trade_mode = st.toggle("Por trade", value=False, help="Exibe um ponto por operação individual em vez de por dia.")
     with btn_col:
         st.write("")
         st.write("")
         if st.button("🔄", help="Atualizar gráfico"):
             st.rerun()
 
-    fig = build_balance_chart(
-        trade_dates=df_agg["Data"],
-        daily_pnl_values=df_agg["PnL do Dia"],
-        initial_balance=account_value,
-        max_drawdown=max_drawdown_val,
-        profit_target=profit_target_val,
-    )
+    if per_trade_mode:
+        fig = build_trade_chart(
+            df_trades=df,
+            date_col=date_choice,
+            initial_balance=account_value,
+            max_drawdown=max_drawdown_val,
+            profit_target=profit_target_val,
+            daily_drawdown=daily_drawdown_val,
+        )
+    else:
+        fig = build_balance_chart(
+            trade_dates=df_agg["Data"],
+            daily_pnl_values=df_agg["PnL do Dia"],
+            initial_balance=account_value,
+            max_drawdown=max_drawdown_val,
+            profit_target=profit_target_val,
+            daily_drawdown=daily_drawdown_val,
+        )
     st.plotly_chart(fig, use_container_width=True)
 
     # ── Dias acima de $100 ──────────────────
