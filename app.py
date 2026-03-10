@@ -199,6 +199,7 @@ def _save_settings(
     profit_k: float,
     daily_dd_k: float,
     drawdown_type: str = "Static",
+    limit_pct: float = 40.0,
 ) -> None:
     (UPLOADS_DIR / f"{stem}.json").write_text(json.dumps({
         "account_value_k":   account_k,
@@ -206,6 +207,7 @@ def _save_settings(
         "profit_target_k":   profit_k,
         "daily_drawdown_k":  daily_dd_k,
         "drawdown_type":     drawdown_type,
+        "limit_pct":         limit_pct,
     }))
 
 
@@ -218,6 +220,7 @@ def _auto_save_drawdown_type(file_name: str) -> None:
         st.session_state.get(f"{file_name}_profit_k",     0.0),
         st.session_state.get(f"{file_name}_daily_dd_k",   0.0),
         st.session_state.get(f"{file_name}_drawdown_type", "Static"),
+        st.session_state.get(f"{file_name}_limit_pct",    40.0),
     )
 
 
@@ -626,11 +629,12 @@ def main():
     # Recarrega do JSON sempre que trocar de planilha ou na primeira visita
     if _init_key not in st.session_state or st.session_state.get("_last_file") != file_name:
         s = _load_settings(file_name)
-        st.session_state[f"{file_name}_account_k"]   = float(s.get("account_value_k",  0.0))
-        st.session_state[f"{file_name}_drawdown_k"] = float(s.get("max_drawdown_k",   0.0))
-        st.session_state[f"{file_name}_profit_k"]   = float(s.get("profit_target_k",  0.0))
-        st.session_state[f"{file_name}_daily_dd_k"]    = float(s.get("daily_drawdown_k", 0.0))
+        st.session_state[f"{file_name}_account_k"]    = float(s.get("account_value_k",  0.0))
+        st.session_state[f"{file_name}_drawdown_k"]   = float(s.get("max_drawdown_k",   0.0))
+        st.session_state[f"{file_name}_profit_k"]     = float(s.get("profit_target_k",  0.0))
+        st.session_state[f"{file_name}_daily_dd_k"]   = float(s.get("daily_drawdown_k", 0.0))
         st.session_state[f"{file_name}_drawdown_type"] = s.get("drawdown_type", "Static")
+        st.session_state[f"{file_name}_limit_pct"]    = float(s.get("limit_pct", 40.0))
         st.session_state[_init_key] = True
     st.session_state["_last_file"] = file_name
 
@@ -652,6 +656,7 @@ def main():
 
     # ── Parâmetros principais ───────────────
     st.divider()
+    st.subheader("⚙️ Parâmetros da Conta")
     # _btn_col, _ = st.columns([1, 5])
     # with _btn_col:
     #     if st.button("📂 Carregar configurações salvas", help="Recarrega Saldo, Drawdown e Profit do arquivo JSON"):
@@ -686,9 +691,9 @@ def main():
             "⚠️ Limite de consistência (%)",
             min_value=1.0,
             max_value=100.0,
-            value=40.0,
             step=1.0,
             help="Dias cujo PnL represente mais do que este percentual do total serão sinalizados.",
+            key=f"{file_name}_limit_pct",
         )
 
     col_d, col_e, col_f = st.columns([1, 1, 1])
@@ -727,6 +732,7 @@ def main():
         _save_settings(
             file_name, account_value_k, max_drawdown_k, profit_target_k, daily_drawdown_k,
             st.session_state.get(f"{file_name}_drawdown_type", "Static"),
+            limit_pct,
         )
         st.toast("Configurações salvas!", icon="✅")
 
@@ -833,36 +839,6 @@ def main():
         "✅ Dentro" if consistency_ok else "🔴 Violada",
     )
 
-    # ── Métricas de Daily Loss Limit ─────────
-    if df_daily_loss is not None and daily_loss_limit:
-        st.divider()
-        st.caption("📊 Daily Loss Limit — análise intraday por dia de trading")
-        last_day = df_daily_loss.iloc[-1]
-        n_breaches = int(df_daily_loss["Soft Breach"].sum())
-        dl1, dl2, dl3, dl4 = st.columns(4)
-        dl1.metric(
-            "Daily Loss Limit",
-            f"${daily_loss_limit:,.0f}",
-            help="Perda máxima configurada por dia",
-        )
-        dl2.metric(
-            "Loss Used (Último Dia)",
-            f"${last_day['Perda Máx. no Dia']:,.2f}",
-            delta=f"{last_day['Perda Máx. no Dia'] / daily_loss_limit * 100:.1f}% do limite",
-            delta_color="inverse" if last_day["Soft Breach"] else "off",
-        )
-        dl3.metric(
-            "Restante (Último Dia)",
-            f"${last_day['Restante']:,.2f}",
-            delta="✅ OK" if not last_day["Soft Breach"] else "🔴 Soft Breach",
-            delta_color="off",
-        )
-        dl4.metric(
-            "Soft Breaches Histórico",
-            n_breaches,
-            delta="dias com bloqueio temporário",
-            delta_color="off",
-        )
 
     # ── Tabela consolidada ──────────────────
     st.subheader("📋 Resultado Consolidado por Data")
@@ -985,35 +961,41 @@ def main():
 
     # ── Histórico Daily Loss / Soft Breaches ─
     if df_daily_loss is not None:
-        st.subheader("🔴 Histórico de Daily Loss Limit")
-        n_breaches = int(df_daily_loss["Soft Breach"].sum())
-        if n_breaches > 0:
-            st.warning(
-                f"**{n_breaches} dia(s) com Soft Breach detectado(s).**  "
-                "A conta não foi encerrada, mas nesses dias o trading foi bloqueado temporariamente."
+        with st.expander("🔴 Histórico de Daily Loss Limit", expanded=False):
+            n_breaches = int(df_daily_loss["Soft Breach"].sum())
+            st.metric(
+                "Soft Breaches Histórico",
+                n_breaches,
+                delta="dias com bloqueio temporário",
+                delta_color="off",
             )
-        else:
-            st.success("Nenhum Soft Breach detectado no período analisado.")
+            if n_breaches > 0:
+                st.warning(
+                    f"**{n_breaches} dia(s) com Soft Breach detectado(s).**  "
+                    "A conta não foi encerrada, mas nesses dias o trading foi bloqueado temporariamente."
+                )
+            else:
+                st.success("Nenhum Soft Breach detectado no período analisado.")
 
-        dl_display = df_daily_loss.copy()
-        dl_display["Soft Breach"] = dl_display["Soft Breach"].map(
-            lambda x: "🔴 Soft Breach" if x else "✅ OK"
-        )
-        styled_dl = (
-            dl_display.style
-            .format({
-                "Saldo Início do Dia": "${:,.2f}",
-                "Pior Equity no Dia":  "${:,.2f}",
-                "Perda Máx. no Dia":   "${:,.2f}",
-                "Limite Diário":        "${:,.2f}",
-                "Restante":            "${:,.2f}",
-            })
-            .map(
-                lambda v: "color: #c0392b; font-weight: bold" if v == "🔴 Soft Breach" else "color: #27ae60",
-                subset=["Soft Breach"],
+            dl_display = df_daily_loss.copy()
+            dl_display["Soft Breach"] = dl_display["Soft Breach"].map(
+                lambda x: "🔴 Soft Breach" if x else "✅ OK"
             )
-        )
-        st.dataframe(styled_dl, use_container_width=True, hide_index=True)
+            styled_dl = (
+                dl_display.style
+                .format({
+                    "Saldo Início do Dia": "${:,.2f}",
+                    "Pior Equity no Dia":  "${:,.2f}",
+                    "Perda Máx. no Dia":   "${:,.2f}",
+                    "Limite Diário":        "${:,.2f}",
+                    "Restante":            "${:,.2f}",
+                })
+                .map(
+                    lambda v: "color: #c0392b; font-weight: bold" if v == "🔴 Soft Breach" else "color: #27ae60",
+                    subset=["Soft Breach"],
+                )
+            )
+            st.dataframe(styled_dl, use_container_width=True, hide_index=True)
 
     # ── Dias acima de $100 ──────────────────
     if show_above_100:
