@@ -158,6 +158,47 @@ def _make_file_like(path: Path):
     return obj
 
 
+def _compute_drawdown_series(
+    balances: list,
+    dd_amount: float,
+    dd_type: str,
+    trade_dates: list | None = None,
+) -> list:
+    """Calcula a série do limite de drawdown para cada ponto de saldo.
+
+    balances   : lista de saldos (ponto 0 = saldo inicial, ponto i = após evento i)
+    dd_amount  : valor absoluto do drawdown (initial_balance - static_limit)
+    dd_type    : "Static" | "EOD" | "Trailing"
+    trade_dates: para EOD em modo por-trade, lista de datetime de cada trade (sem o ponto inicial)
+    """
+    if dd_type == "Trailing":
+        highest = balances[0]
+        result = []
+        for b in balances:
+            highest = max(highest, b)
+            result.append(highest - dd_amount)
+        return result
+
+    if dd_type == "EOD" and trade_dates is not None:
+        # Por trade: limite atualiza na virada de dia (usa saldo EOD do dia anterior)
+        current_limit = balances[0] - dd_amount
+        current_day = trade_dates[0].date() if trade_dates else None
+        result = [current_limit]
+        for i, d in enumerate(trade_dates):
+            if d.date() != current_day:
+                current_limit = balances[i] - dd_amount  # saldo ao final do dia anterior
+                current_day = d.date()
+            result.append(current_limit)
+        return result
+
+    if dd_type == "EOD":
+        # Por dia: cada ponto já é EOD → limite = saldo_EOD - dd_amount
+        return [b - dd_amount for b in balances]
+
+    # Static (default): limite fixo com base no saldo inicial
+    return [balances[0] - dd_amount] * len(balances)
+
+
 def _build_segments(dates: list, balances: list, threshold: float) -> list:
     """Divide a série em segmentos verde/vermelho conforme cruzam o threshold."""
     segments = []
@@ -194,6 +235,7 @@ def build_balance_chart(
     max_drawdown: float | None = None,
     profit_target: float | None = None,
     daily_drawdown: float | None = None,
+    drawdown_type: str = "Static",
 ) -> go.Figure:
     """Gráfico de saldo acumulado estilo drawdown de prop firms."""
     dates_dt = pd.to_datetime(trade_dates, format="%d/%m/%Y")
@@ -228,13 +270,16 @@ def build_balance_chart(
         annotation_font_color="#aaaaaa",
     )
     if max_drawdown is not None:
-        fig.add_hline(
-            y=max_drawdown,
-            line_dash="dot", line_color="#e74c3c", line_width=1.5,
-            annotation_text=f"  Max Drawdown: ${max_drawdown:,.2f}",
-            annotation_position="bottom left",
-            annotation_font_color="#e74c3c",
-        )
+        dd_amount = initial_balance - max_drawdown
+        dd_limits = _compute_drawdown_series(balances, dd_amount, drawdown_type)
+        fig.add_trace(go.Scatter(
+            x=all_dates,
+            y=dd_limits,
+            mode="lines",
+            line=dict(color="#e74c3c", width=1.5, dash="dot"),
+            name=f"Max Drawdown ({drawdown_type})",
+            hovertemplate="%{x|%d/%m/%Y}<br><b>$%{y:,.2f}</b><extra></extra>",
+        ))
     if profit_target is not None:
         fig.add_hline(
             y=profit_target,
@@ -273,6 +318,7 @@ def build_trade_chart(
     max_drawdown: float | None = None,
     profit_target: float | None = None,
     daily_drawdown: float | None = None,
+    drawdown_type: str = "Static",
 ) -> go.Figure:
     """Gráfico de saldo acumulado por operação individual."""
     df_sorted = df_trades.sort_values(date_col).reset_index(drop=True)
@@ -316,13 +362,17 @@ def build_trade_chart(
         annotation_font_color="#aaaaaa",
     )
     if max_drawdown is not None:
-        fig.add_hline(
-            y=max_drawdown,
-            line_dash="dot", line_color="#e74c3c", line_width=1.5,
-            annotation_text=f"  Max Drawdown: ${max_drawdown:,.2f}",
-            annotation_position="bottom left",
-            annotation_font_color="#e74c3c",
-        )
+        dd_amount = initial_balance - max_drawdown
+        trade_dates_list = df_sorted[date_col].tolist()
+        dd_limits = _compute_drawdown_series(balances, dd_amount, drawdown_type, trade_dates=trade_dates_list)
+        fig.add_trace(go.Scatter(
+            x=indices,
+            y=dd_limits,
+            mode="lines",
+            line=dict(color="#e74c3c", width=1.5, dash="dot"),
+            name=f"Max Drawdown ({drawdown_type})",
+            hovertemplate="Trade %{x:.0f}<br><b>$%{y:,.2f}</b><extra></extra>",
+        ))
     if profit_target is not None:
         fig.add_hline(
             y=profit_target,
@@ -671,12 +721,25 @@ def main():
         st.dataframe(styled_plan, use_container_width=True, hide_index=True)
 
     # ── Gráfico de saldo ─────────────────────
-    chart_col, tog_col, btn_col = st.columns([8, 2, 1])
+    chart_col, tog_col, dd_type_col, btn_col = st.columns([5, 2, 3, 1])
     with chart_col:
         st.subheader("📈 Acompanhamento de Saldo")
     with tog_col:
         st.write("")
         per_trade_mode = st.toggle("Por trade", value=False, help="Exibe um ponto por operação individual em vez de por dia.")
+    with dd_type_col:
+        drawdown_type = st.selectbox(
+            "Tipo de Drawdown",
+            options=["Static", "EOD", "Trailing"],
+            help=(
+                "**Static**: limite fixo baseado no saldo inicial — nunca se move.\n\n"
+                "**EOD (End of Day)**: limite recalculado ao fechamento de cada dia "
+                "com base no saldo final do dia.\n\n"
+                "**Trailing**: acompanha o maior saldo atingido — "
+                "sobe conforme novos picos são alcançados, nunca desce."
+            ),
+            disabled=max_drawdown_val is None,
+        )
     with btn_col:
         st.write("")
         st.write("")
@@ -691,6 +754,7 @@ def main():
             max_drawdown=max_drawdown_val,
             profit_target=profit_target_val,
             daily_drawdown=daily_drawdown_val,
+            drawdown_type=drawdown_type,
         )
     else:
         fig = build_balance_chart(
@@ -700,6 +764,7 @@ def main():
             max_drawdown=max_drawdown_val,
             profit_target=profit_target_val,
             daily_drawdown=daily_drawdown_val,
+            drawdown_type=drawdown_type,
         )
     st.plotly_chart(fig, use_container_width=True)
 
