@@ -246,11 +246,14 @@ def _compute_drawdown_series(
     trade_dates: para EOD em modo por-trade, lista de datetime de cada trade (sem o ponto inicial)
     """
     if dd_type == "Trailing":
-        highest = balances[0]
+        # Trailing until Breakeven: o limite acompanha o HWM, mas nunca ultrapassa
+        # o saldo inicial da conta (travamento no breakeven).
+        initial = balances[0]
+        highest = initial
         result = []
         for b in balances:
             highest = max(highest, b)
-            result.append(highest - dd_amount)
+            result.append(min(highest - dd_amount, initial))
         return result
 
     if dd_type == "EOD" and trade_dates is not None:
@@ -776,7 +779,10 @@ def main():
 
     # ── Métricas no topo ────────────────────
     consistency_ok = violations == 0
-    balance = account_value + total_pnl
+    # true_total_pnl sempre usa todos os dias (positivos e negativos),
+    # independente do filtro only_positive — garante consistência com o gráfico.
+    true_total_pnl = df_agg["PnL do Dia"].sum()
+    balance = account_value + true_total_pnl
 
     hwm_balance = None
     if account_value > 0:
@@ -824,7 +830,7 @@ def main():
         m3b.metric(
             "Saldo da Conta",
             f"{balance:,.2f}",
-            delta=f"{total_pnl:+,.2f}",
+            delta=f"{true_total_pnl:+,.2f}",
             delta_color="normal",
         )
     m4.metric(
