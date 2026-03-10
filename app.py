@@ -129,6 +129,57 @@ def compute_consistency(
     return df, total
 
 
+def compute_daily_loss_analysis(
+    df: pd.DataFrame,
+    date_col: str,
+    initial_balance: float,
+    daily_loss_limit: float,
+) -> pd.DataFrame:
+    """Para cada dia de trading calcula a perda intraday máxima e detecta Soft Breach.
+
+    A lógica replica o modelo de Daily Loss Limit de prop firms:
+    - O limite é recalculado a partir do saldo inicial de CADA dia
+    - O pior equity intraday é estimado pela menor equity acumulada no dia
+      (soma progressiva dos trades ordenados por horário)
+    - Soft Breach = perda máxima do dia >= daily_loss_limit
+    """
+    df_sorted = df.sort_values(date_col).copy()
+    df_sorted["_date"] = df_sorted[date_col].dt.normalize()
+
+    running_balance = initial_balance
+    rows = []
+
+    for date, day_trades in df_sorted.groupby("_date", sort=True):
+        day_sorted = day_trades.sort_values(date_col)
+        start_balance = running_balance
+
+        pnls = day_sorted["Trade PnL"].tolist()
+        running = 0.0
+        min_running = 0.0
+        for p in pnls:
+            running += p
+            min_running = min(min_running, running)
+
+        min_equity = start_balance + min_running
+        max_loss = start_balance - min_equity        # >= 0
+        end_balance = start_balance + sum(pnls)
+        remaining = max(0.0, daily_loss_limit - max_loss)
+
+        rows.append({
+            "Data": date.strftime("%d/%m/%Y"),
+            "Saldo Início do Dia": start_balance,
+            "Pior Equity no Dia": min_equity,
+            "Perda Máx. no Dia": max_loss,
+            "Limite Diário": daily_loss_limit,
+            "Restante": remaining,
+            "Soft Breach": max_loss >= daily_loss_limit,
+        })
+
+        running_balance = end_balance
+
+    return pd.DataFrame(rows)
+
+
 # ─────────────────────────────────────────────
 # 4. VISUALIZAÇÃO
 # ─────────────────────────────────────────────
@@ -141,13 +192,33 @@ def _load_settings(stem: str) -> dict:
         return {}
 
 
-def _save_settings(stem: str, account_k: float, drawdown_k: float, profit_k: float, daily_dd_k: float) -> None:
+def _save_settings(
+    stem: str,
+    account_k: float,
+    drawdown_k: float,
+    profit_k: float,
+    daily_dd_k: float,
+    drawdown_type: str = "Static",
+) -> None:
     (UPLOADS_DIR / f"{stem}.json").write_text(json.dumps({
         "account_value_k":   account_k,
         "max_drawdown_k":    drawdown_k,
         "profit_target_k":   profit_k,
         "daily_drawdown_k":  daily_dd_k,
+        "drawdown_type":     drawdown_type,
     }))
+
+
+def _auto_save_drawdown_type(file_name: str) -> None:
+    """Callback disparado quando o tipo de drawdown é alterado — persiste no JSON."""
+    _save_settings(
+        file_name,
+        st.session_state.get(f"{file_name}_account_k",    0.0),
+        st.session_state.get(f"{file_name}_drawdown_k",   0.0),
+        st.session_state.get(f"{file_name}_profit_k",     0.0),
+        st.session_state.get(f"{file_name}_daily_dd_k",   0.0),
+        st.session_state.get(f"{file_name}_drawdown_type", "Static"),
+    )
 
 
 def _make_file_like(path: Path):
@@ -234,8 +305,9 @@ def build_balance_chart(
     initial_balance: float,
     max_drawdown: float | None = None,
     profit_target: float | None = None,
-    daily_drawdown: float | None = None,
+    daily_loss_limit: float | None = None,
     drawdown_type: str = "Static",
+    soft_breach_dates: list | None = None,
 ) -> go.Figure:
     """Gráfico de saldo acumulado estilo drawdown de prop firms."""
     dates_dt = pd.to_datetime(trade_dates, format="%d/%m/%Y")
@@ -288,14 +360,49 @@ def build_balance_chart(
             annotation_position="top left",
             annotation_font_color="#27ae60",
         )
-    if daily_drawdown is not None:
-        fig.add_hline(
-            y=daily_drawdown,
-            line_dash="dot", line_color="#e67e22", line_width=1.5,
-            annotation_text=f"  Daily Drawdown: ${daily_drawdown:,.2f}",
-            annotation_position="bottom left",
-            annotation_font_color="#e67e22",
-        )
+    if initial_balance > 0:
+        # HWM dinâmico: máximo acumulado até cada ponto — cresce como escada
+        current_hwm = balances[0]
+        hwm_series = []
+        for b in balances:
+            current_hwm = max(current_hwm, b)
+            hwm_series.append(current_hwm)
+        fig.add_trace(go.Scatter(
+            x=all_dates,
+            y=hwm_series,
+            mode="lines",
+            line=dict(color="#f1c40f", width=1, dash="dash"),
+            name="High Water Mark",
+            hovertemplate="%{x|%d/%m/%Y}<br><b>HWM: $%{y:,.2f}</b><extra></extra>",
+        ))
+    if daily_loss_limit is not None:
+        # Step function: threshold = start_of_day_balance - daily_loss_limit
+        # Com line_shape="hv" a linha fica flat durante o dia e salta no fechamento
+        daily_thresholds = [b - daily_loss_limit for b in balances]
+        fig.add_trace(go.Scatter(
+            x=all_dates,
+            y=daily_thresholds,
+            mode="lines",
+            line=dict(color="#e67e22", width=1.5, dash="dot", shape="hv"),
+            name="Daily Loss Limit",
+            hovertemplate="%{x|%d/%m/%Y}<br><b>Limite diário: $%{y:,.2f}</b><extra></extra>",
+        ))
+    if soft_breach_dates:
+        first = True
+        for bd_str in soft_breach_dates:
+            bd = pd.to_datetime(bd_str, format="%d/%m/%Y")
+            fig.add_vrect(
+                x0=str(bd - pd.Timedelta(hours=12)),
+                x1=str(bd + pd.Timedelta(hours=12)),
+                fillcolor="#c0392b",
+                opacity=0.18,
+                line_width=0,
+                annotation_text="Soft Breach" if first else None,
+                annotation_position="top left",
+                annotation_font_color="#c0392b",
+                annotation_font_size=9,
+            )
+            first = False
 
     fig.update_layout(
         paper_bgcolor="#0e1117",
@@ -317,8 +424,9 @@ def build_trade_chart(
     initial_balance: float,
     max_drawdown: float | None = None,
     profit_target: float | None = None,
-    daily_drawdown: float | None = None,
+    daily_loss_limit: float | None = None,
     drawdown_type: str = "Static",
+    soft_breach_dates: list | None = None,
 ) -> go.Figure:
     """Gráfico de saldo acumulado por operação individual."""
     df_sorted = df_trades.sort_values(date_col).reset_index(drop=True)
@@ -381,14 +489,60 @@ def build_trade_chart(
             annotation_position="top left",
             annotation_font_color="#27ae60",
         )
-    if daily_drawdown is not None:
-        fig.add_hline(
-            y=daily_drawdown,
-            line_dash="dot", line_color="#e67e22", line_width=1.5,
-            annotation_text=f"  Daily Drawdown: ${daily_drawdown:,.2f}",
-            annotation_position="bottom left",
-            annotation_font_color="#e67e22",
-        )
+    if initial_balance > 0:
+        # HWM dinâmico: máximo acumulado até cada trade
+        current_hwm = balances[0]
+        hwm_series = []
+        for b in balances:
+            current_hwm = max(current_hwm, b)
+            hwm_series.append(current_hwm)
+        fig.add_trace(go.Scatter(
+            x=indices,
+            y=hwm_series,
+            mode="lines",
+            line=dict(color="#f1c40f", width=1, dash="dash"),
+            name="High Water Mark",
+            hovertemplate="Trade %{x:.0f}<br><b>HWM: $%{y:,.2f}</b><extra></extra>",
+        ))
+    if daily_loss_limit is not None:
+        # Step function por trade: threshold = start_of_day_balance - daily_loss_limit
+        daily_thresholds = [initial_balance - daily_loss_limit]
+        current_day = None
+        day_start_balance = initial_balance
+        for i in range(len(pnl_vals)):
+            trade_day = df_sorted[date_col].iloc[i].date()
+            if trade_day != current_day:
+                current_day = trade_day
+                day_start_balance = balances[i]
+            daily_thresholds.append(day_start_balance - daily_loss_limit)
+        fig.add_trace(go.Scatter(
+            x=indices,
+            y=daily_thresholds,
+            mode="lines",
+            line=dict(color="#e67e22", width=1.5, dash="dot"),
+            name="Daily Loss Limit",
+            hovertemplate="Trade %{x:.0f}<br><b>Limite diário: $%{y:,.2f}</b><extra></extra>",
+        ))
+    if soft_breach_dates:
+        breach_date_set = {pd.to_datetime(d, format="%d/%m/%Y").normalize() for d in soft_breach_dates}
+        first = True
+        for breach_date in sorted(breach_date_set):
+            mask = df_sorted[date_col].dt.normalize() == breach_date
+            if mask.any():
+                idxs = df_sorted.index[mask].tolist()
+                x0 = idxs[0] + 1 - 0.5   # +1: índice 0 no chart é o ponto inicial
+                x1 = idxs[-1] + 1 + 0.5
+                fig.add_vrect(
+                    x0=x0, x1=x1,
+                    fillcolor="#c0392b",
+                    opacity=0.18,
+                    line_width=0,
+                    annotation_text="Soft Breach" if first else None,
+                    annotation_position="top left",
+                    annotation_font_color="#c0392b",
+                    annotation_font_size=9,
+                )
+                first = False
 
     fig.update_layout(
         paper_bgcolor="#0e1117",
@@ -475,7 +629,8 @@ def main():
         st.session_state[f"{file_name}_account_k"]   = float(s.get("account_value_k",  0.0))
         st.session_state[f"{file_name}_drawdown_k"] = float(s.get("max_drawdown_k",   0.0))
         st.session_state[f"{file_name}_profit_k"]   = float(s.get("profit_target_k",  0.0))
-        st.session_state[f"{file_name}_daily_dd_k"] = float(s.get("daily_drawdown_k", 0.0))
+        st.session_state[f"{file_name}_daily_dd_k"]    = float(s.get("daily_drawdown_k", 0.0))
+        st.session_state[f"{file_name}_drawdown_type"] = s.get("drawdown_type", "Static")
         st.session_state[_init_key] = True
     st.session_state["_last_file"] = file_name
 
@@ -566,10 +721,13 @@ def main():
             help="Perda máxima permitida por dia. Ex: 1 = $1.000 abaixo do inicial → linha laranja no gráfico.",
             key=f"{file_name}_daily_dd_k",
         )
-        daily_drawdown_val = account_value - daily_drawdown_k * 1_000 if daily_drawdown_k > 0 else None
+        daily_loss_limit = daily_drawdown_k * 1_000 if daily_drawdown_k > 0 else None
 
     if st.button("💾 Salvar configurações", help="Salva Saldo, Drawdown e Profit para esta planilha"):
-        _save_settings(file_name, account_value_k, max_drawdown_k, profit_target_k, daily_drawdown_k)
+        _save_settings(
+            file_name, account_value_k, max_drawdown_k, profit_target_k, daily_drawdown_k,
+            st.session_state.get(f"{file_name}_drawdown_type", "Static"),
+        )
         st.toast("Configurações salvas!", icon="✅")
 
     # ── Toggles ─────────────────────────────
@@ -614,11 +772,23 @@ def main():
     consistency_ok = violations == 0
     balance = account_value + total_pnl
 
+    hwm_balance = None
+    if account_value > 0:
+        cum = [0.0] + list(pd.Series(df_agg["PnL do Dia"].tolist()).cumsum())
+        hwm_balance = max(account_value + c for c in cum)
+
     if include_negatives:
         current_max_pct = df_result["% do Total"].abs().max()
     else:
         _pos = df_result[df_result["PnL do Dia"] > 0]
         current_max_pct = _pos["% do Total"].max() if len(_pos) > 0 else 0.0
+
+    # ── Daily Loss Analysis ──────────────────
+    df_daily_loss = None
+    soft_breach_dates: list[str] = []
+    if daily_loss_limit and account_value > 0:
+        df_daily_loss = compute_daily_loss_analysis(df, date_choice, account_value, daily_loss_limit)
+        soft_breach_dates = df_daily_loss.loc[df_daily_loss["Soft Breach"], "Data"].tolist()
 
     st.divider()
     st.markdown("""
@@ -662,6 +832,37 @@ def main():
         "Regra de Consistência",
         "✅ Dentro" if consistency_ok else "🔴 Violada",
     )
+
+    # ── Métricas de Daily Loss Limit ─────────
+    if df_daily_loss is not None and daily_loss_limit:
+        st.divider()
+        st.caption("📊 Daily Loss Limit — análise intraday por dia de trading")
+        last_day = df_daily_loss.iloc[-1]
+        n_breaches = int(df_daily_loss["Soft Breach"].sum())
+        dl1, dl2, dl3, dl4 = st.columns(4)
+        dl1.metric(
+            "Daily Loss Limit",
+            f"${daily_loss_limit:,.0f}",
+            help="Perda máxima configurada por dia",
+        )
+        dl2.metric(
+            "Loss Used (Último Dia)",
+            f"${last_day['Perda Máx. no Dia']:,.2f}",
+            delta=f"{last_day['Perda Máx. no Dia'] / daily_loss_limit * 100:.1f}% do limite",
+            delta_color="inverse" if last_day["Soft Breach"] else "off",
+        )
+        dl3.metric(
+            "Restante (Último Dia)",
+            f"${last_day['Restante']:,.2f}",
+            delta="✅ OK" if not last_day["Soft Breach"] else "🔴 Soft Breach",
+            delta_color="off",
+        )
+        dl4.metric(
+            "Soft Breaches Histórico",
+            n_breaches,
+            delta="dias com bloqueio temporário",
+            delta_color="off",
+        )
 
     # ── Tabela consolidada ──────────────────
     st.subheader("📋 Resultado Consolidado por Data")
@@ -721,9 +922,18 @@ def main():
         st.dataframe(styled_plan, use_container_width=True, hide_index=True)
 
     # ── Gráfico de saldo ─────────────────────
-    chart_col, tog_col, dd_type_col, btn_col = st.columns([5, 2, 3, 1])
+    chart_col, hwm_col, tog_col, dd_type_col, btn_col = st.columns([4, 2, 2, 3, 1])
     with chart_col:
         st.subheader("📈 Acompanhamento de Saldo")
+    with hwm_col:
+        if hwm_balance is not None:
+            st.metric(
+                "🏆 High Water Mark",
+                f"${hwm_balance:,.2f}",
+                delta=f"+${hwm_balance - account_value:,.2f}" if hwm_balance > account_value else "= Initial Balance",
+                delta_color="normal" if hwm_balance > account_value else "off",
+                help="Maior saldo já atingido pela conta no período analisado.",
+            )
     with tog_col:
         st.write("")
         per_trade_mode = st.toggle("Por trade", value=False, help="Exibe um ponto por operação individual em vez de por dia.")
@@ -739,6 +949,9 @@ def main():
                 "sobe conforme novos picos são alcançados, nunca desce."
             ),
             disabled=max_drawdown_val is None,
+            key=f"{file_name}_drawdown_type",
+            on_change=_auto_save_drawdown_type,
+            args=(file_name,),
         )
     with btn_col:
         st.write("")
@@ -753,8 +966,9 @@ def main():
             initial_balance=account_value,
             max_drawdown=max_drawdown_val,
             profit_target=profit_target_val,
-            daily_drawdown=daily_drawdown_val,
+            daily_loss_limit=daily_loss_limit,
             drawdown_type=drawdown_type,
+            soft_breach_dates=soft_breach_dates or None,
         )
     else:
         fig = build_balance_chart(
@@ -763,10 +977,43 @@ def main():
             initial_balance=account_value,
             max_drawdown=max_drawdown_val,
             profit_target=profit_target_val,
-            daily_drawdown=daily_drawdown_val,
+            daily_loss_limit=daily_loss_limit,
             drawdown_type=drawdown_type,
+            soft_breach_dates=soft_breach_dates or None,
         )
     st.plotly_chart(fig, use_container_width=True)
+
+    # ── Histórico Daily Loss / Soft Breaches ─
+    if df_daily_loss is not None:
+        st.subheader("🔴 Histórico de Daily Loss Limit")
+        n_breaches = int(df_daily_loss["Soft Breach"].sum())
+        if n_breaches > 0:
+            st.warning(
+                f"**{n_breaches} dia(s) com Soft Breach detectado(s).**  "
+                "A conta não foi encerrada, mas nesses dias o trading foi bloqueado temporariamente."
+            )
+        else:
+            st.success("Nenhum Soft Breach detectado no período analisado.")
+
+        dl_display = df_daily_loss.copy()
+        dl_display["Soft Breach"] = dl_display["Soft Breach"].map(
+            lambda x: "🔴 Soft Breach" if x else "✅ OK"
+        )
+        styled_dl = (
+            dl_display.style
+            .format({
+                "Saldo Início do Dia": "${:,.2f}",
+                "Pior Equity no Dia":  "${:,.2f}",
+                "Perda Máx. no Dia":   "${:,.2f}",
+                "Limite Diário":        "${:,.2f}",
+                "Restante":            "${:,.2f}",
+            })
+            .map(
+                lambda v: "color: #c0392b; font-weight: bold" if v == "🔴 Soft Breach" else "color: #27ae60",
+                subset=["Soft Breach"],
+            )
+        )
+        st.dataframe(styled_dl, use_container_width=True, hide_index=True)
 
     # ── Dias acima de $100 ──────────────────
     if show_above_100:
