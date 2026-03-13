@@ -125,6 +125,7 @@ celerybeat.pid
 
 # Environments
 .env
+.streamlit/secrets.toml
 .venv
 env/
 venv/
@@ -174,5 +175,6 @@ poetry.toml
 pyrightconfig.json
 
 uploads/
+secrets.toml
 
 # End of https://www.toptal.com/developers/gitignore/api/python

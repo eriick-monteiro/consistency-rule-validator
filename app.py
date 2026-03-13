@@ -1,3 +1,5 @@
+import bcrypt
+import hmac
 import io
 import json
 import types
@@ -9,6 +11,37 @@ import numpy as np
 import plotly.graph_objects as go
 
 UPLOADS_DIR = Path(__file__).parent / "uploads"
+
+
+# ─────────────────────────────────────────────
+# LOGIN
+# ─────────────────────────────────────────────
+
+def _check_credentials(login: str, password: str) -> bool:
+    expected_login = st.secrets.get("LOGIN", "")
+    password_hash  = st.secrets.get("PASSWORD_HASH", "").encode()
+    login_ok    = hmac.compare_digest(login.strip(), expected_login)
+    password_ok = bool(password_hash) and bcrypt.checkpw(password.strip().encode(), password_hash)
+    return login_ok and password_ok
+
+
+def _login_page() -> None:
+    st.set_page_config(page_title="Login — CRV", layout="centered")
+    st.title("🔐 Acesso Restrito")
+    st.caption("Insira suas credenciais para acessar o Consistency Rule Validator.")
+
+    with st.form("login_form"):
+        login    = st.text_input("Usuário")
+        password = st.text_input("Senha", type="password")
+        submitted = st.form_submit_button("Entrar", use_container_width=True)
+
+    if submitted:
+        if _check_credentials(login, password):
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Usuário ou senha incorretos.")
+
 
 # ─────────────────────────────────────────────
 # 1. LEITURA DE DADOS
@@ -587,6 +620,10 @@ def main():
     )
 
     with st.sidebar:
+        if st.button("🚪 Sair", use_container_width=True):
+            st.session_state["authenticated"] = False
+            st.rerun()
+        st.divider()
         st.header("📁 Planilhas Salvas")
         options = ["⬆️ Novo upload"] + [f.name for f in saved_files]
         sidebar_choice = st.radio("", options, label_visibility="collapsed")
@@ -1028,4 +1065,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if not st.session_state.get("authenticated"):
+        _login_page()
+    else:
+        main()
