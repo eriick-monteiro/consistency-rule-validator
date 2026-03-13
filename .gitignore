@@ -175,6 +175,6 @@ poetry.toml
 pyrightconfig.json
 
 uploads/
-secrets.toml
+.streamlit/secrets.toml
 
 # End of https://www.toptal.com/developers/gitignore/api/python
