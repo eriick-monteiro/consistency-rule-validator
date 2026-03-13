@@ -6,6 +6,7 @@ import types
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -31,9 +32,29 @@ def _login_page() -> None:
     st.caption("Insira suas credenciais para acessar o Consistency Rule Validator.")
 
     with st.form("login_form"):
-        login    = st.text_input("Usuário")
-        password = st.text_input("Senha", type="password")
+        login    = st.text_input("Usuário", autocomplete="username")
+        password = st.text_input("Senha", type="password", autocomplete="current-password")
         submitted = st.form_submit_button("Entrar", use_container_width=True)
+
+    # Garante que o navegador reconheça os campos para sugestão de preenchimento automático
+    components.html("""
+        <script>
+            const doc = window.parent.document;
+            function tag() {
+                doc.querySelectorAll('input[type="text"]').forEach(el => {
+                    el.setAttribute("autocomplete", "username");
+                    el.setAttribute("name", "username");
+                });
+                doc.querySelectorAll('input[type="password"]').forEach(el => {
+                    el.setAttribute("autocomplete", "current-password");
+                    el.setAttribute("name", "password");
+                });
+            }
+            tag();
+            setTimeout(tag, 300);
+            setTimeout(tag, 800);
+        </script>
+    """, height=0)
 
     if submitted:
         if _check_credentials(login, password):
