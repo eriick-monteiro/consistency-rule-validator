@@ -628,31 +628,64 @@ def _color_pnl(val: float) -> str:
     return ""
 
 
-def _build_donut(pct: float, color_filled: str) -> "go.Figure":
-    """Returns a donut gauge figure showing `pct`% filled."""
-    import plotly.graph_objects as _go
+def _build_donut(pct: float, color_filled: str) -> go.Figure:
+    """Returns a thin donut gauge with rounded end caps."""
     pct_c = min(100.0, max(0.0, pct))
-    remaining = 100.0 - pct_c
     color_empty = "#1e2230"
-    fig = _go.Figure(_go.Pie(
-        values=[max(pct_c, 0.001), max(remaining, 0.001)],
-        hole=0.72,
-        marker=dict(colors=[color_filled, color_empty], line=dict(width=0)),
-        textinfo="none",
-        hoverinfo="skip",
-        sort=False,
-        direction="clockwise",
-        rotation=90,
-    ))
+
+    R_outer = 1.0
+    R_inner = 0.84
+    R_mid = (R_outer + R_inner) / 2
+    R_cap = (R_outer - R_inner) / 2
+
+    # Clockwise from top: start = π/2, end decreases
+    start_a = np.pi / 2
+    end_a = start_a - (pct_c / 100.0) * 2 * np.pi
+
+    def _ring_poly(a0, a1, n=200):
+        th = np.linspace(a0, a1, n)
+        xo, yo = np.cos(th) * R_outer, np.sin(th) * R_outer
+        xi, yi = np.cos(th[::-1]) * R_inner, np.sin(th[::-1]) * R_inner
+        return np.concatenate([xo, xi, [xo[0]]]), np.concatenate([yo, yi, [yo[0]]])
+
+    def _circle_poly(cx, cy, r, n=40):
+        th = np.linspace(0, 2 * np.pi, n + 1)
+        return cx + np.cos(th) * r, cy + np.sin(th) * r
+
+    def _scatter(x, y, color):
+        return go.Scatter(
+            x=x, y=y, fill="toself", fillcolor=color,
+            line=dict(width=0), mode="lines",
+            hoverinfo="skip", showlegend=False,
+        )
+
+    # Background ring
+    xb, yb = _ring_poly(0, 2 * np.pi)
+    traces = [_scatter(xb, yb, color_empty)]
+
+    if pct_c > 0.001:
+        # Filled arc
+        xa, ya = _ring_poly(start_a, end_a)
+        traces.append(_scatter(xa, ya, color_filled))
+        # Rounded cap at start
+        xc1, yc1 = _circle_poly(np.cos(start_a) * R_mid, np.sin(start_a) * R_mid, R_cap)
+        traces.append(_scatter(xc1, yc1, color_filled))
+        # Rounded cap at end
+        xc2, yc2 = _circle_poly(np.cos(end_a) * R_mid, np.sin(end_a) * R_mid, R_cap)
+        traces.append(_scatter(xc2, yc2, color_filled))
+
+    fig = go.Figure(traces)
     fig.update_layout(
         showlegend=False,
         paper_bgcolor="#0e1117",
         plot_bgcolor="#0e1117",
         margin=dict(t=5, b=5, l=5, r=5),
         height=180,
+        xaxis=dict(visible=False, range=[-1.1, 1.1], scaleanchor="y", scaleratio=1, fixedrange=True),
+        yaxis=dict(visible=False, range=[-1.1, 1.1], fixedrange=True),
         annotations=[dict(
             text=f"<b>{pct_c:.2f}%</b>",
-            x=0.5, y=0.5,
+            x=0.0, y=0.0, xref="x", yref="y",
             font=dict(size=18, color="white"),
             showarrow=False,
         )],
@@ -749,113 +782,20 @@ def main():
         st.error("Nenhum dado válido encontrado após o tratamento. Verifique o arquivo.")
         st.stop()
 
-    # ── Parâmetros principais ───────────────
-    st.divider()
-    st.subheader("⚙️ Parâmetros da Conta")
-    # _btn_col, _ = st.columns([1, 5])
-    # with _btn_col:
-    #     if st.button("📂 Carregar configurações salvas", help="Recarrega Saldo, Drawdown e Profit do arquivo JSON"):
-    #         s = _load_settings(file_name)
-    #         st.session_state[f"{file_name}_account_k"]  = float(s.get("account_value_k", 0.0))
-    #         st.session_state[f"{file_name}_drawdown_k"] = float(s.get("max_drawdown_k",  0.0))
-    #         st.session_state[f"{file_name}_profit_k"]   = float(s.get("profit_target_k", 0.0))
-    #         st.rerun()
-
-    col_a, col_b, col_c = st.columns([1, 1, 1])
-
-    with col_a:
-        date_choice = st.selectbox(
-            "📅 Agregar por qual data?",
-            options=["Opening Date", "Closing Date"],
-            help="Escolha a coluna de data base para a consolidação diária.",
-        )
-
-    with col_b:
-        account_value_k = st.number_input(
-            "💰 Valor inicial da conta (em milhares)",
-            min_value=0.0,
-            step=1.0,
-            format="%.0f",
-            help="Digite o valor em milhares. Ex: 25 = $25.000",
-            key=f"{file_name}_account_k",
-        )
-        account_value = account_value_k * 1_000
-
-    with col_c:
-        limit_pct = st.number_input(
-            "⚠️ Limite de consistência (%)",
-            min_value=1.0,
-            max_value=100.0,
-            step=1.0,
-            help="Dias cujo PnL represente mais do que este percentual do total serão sinalizados.",
-            key=f"{file_name}_limit_pct",
-        )
-
-    col_d, col_e, col_f = st.columns([1, 1, 1])
-    with col_d:
-        max_drawdown_k = st.number_input(
-            "📉 Drawdown máximo (em milhares)",
-            min_value=0.0,
-            step=1.0,
-            format="%.2f",
-            help="Valor abaixo do inicial. Ex: 4 = $4.000 abaixo → linha em $146.000 (conta de $150k)",
-            key=f"{file_name}_drawdown_k",
-        )
-        max_drawdown_val = account_value - max_drawdown_k * 1_000 if max_drawdown_k > 0 else None
-    with col_e:
-        profit_target_k = st.number_input(
-            "🎯 Meta de lucro (em milhares)",
-            min_value=0.0,
-            step=1.0,
-            format="%.2f",
-            help="Valor acima do inicial. Ex: 9 = $9.000 acima → linha em $159.000 (conta de $150k)",
-            key=f"{file_name}_profit_k",
-        )
-        profit_target_val = account_value + profit_target_k * 1_000 if profit_target_k > 0 else None
-    with col_f:
-        daily_drawdown_k = st.number_input(
-            "🟠 Drawdown diário (em milhares)",
-            min_value=0.0,
-            step=1.0,
-            format="%.2f",
-            help="Perda máxima permitida por dia. Ex: 1 = $1.000 abaixo do inicial → linha laranja no gráfico.",
-            key=f"{file_name}_daily_dd_k",
-        )
-        daily_loss_limit = daily_drawdown_k * 1_000 if daily_drawdown_k > 0 else None
-
-    if st.button("💾 Salvar configurações", help="Salva Saldo, Drawdown e Profit para esta planilha"):
-        _save_settings(
-            file_name, account_value_k, max_drawdown_k, profit_target_k, daily_drawdown_k,
-            st.session_state.get(f"{file_name}_drawdown_type", "Static"),
-            limit_pct,
-        )
-        st.toast("Configurações salvas!", icon="✅")
-
-    # ── Toggles ─────────────────────────────
-    st.divider()
-    tog1, tog2, tog3 = st.columns(3)
-
-    with tog1:
-        include_negatives = st.toggle(
-            "Incluir dias negativos na regra de %",
-            value=False,
-            help="Por padrão, dias com PnL negativo não são sinalizados como violadores do limite. "
-                 "Ative para verificar o valor absoluto de todos os dias.",
-        )
-
-    with tog2:
-        only_positive = st.toggle(
-            "Exibir apenas dias positivos",
-            value=False,
-            help="Filtra a tabela e o gráfico para mostrar somente dias com PnL > 0.",
-        )
-
-    with tog3:
-        show_above_100 = st.toggle(
-            "Destacar dias acima de $100",
-            value=False,
-            help="Exibe uma seção separada listando os dias com PnL consolidado acima de $100.",
-        )
+    # ── Valores lidos do session state (widgets renderizados nas abas) ──────────
+    account_value_k   = st.session_state.get(f"{file_name}_account_k",    0.0)
+    account_value     = account_value_k * 1_000
+    limit_pct         = st.session_state.get(f"{file_name}_limit_pct",   40.0)
+    max_drawdown_k    = st.session_state.get(f"{file_name}_drawdown_k",   0.0)
+    max_drawdown_val  = account_value - max_drawdown_k * 1_000 if max_drawdown_k > 0 else None
+    profit_target_k   = st.session_state.get(f"{file_name}_profit_k",     0.0)
+    profit_target_val = account_value + profit_target_k * 1_000 if profit_target_k > 0 else None
+    daily_drawdown_k  = st.session_state.get(f"{file_name}_daily_dd_k",   0.0)
+    daily_loss_limit  = daily_drawdown_k * 1_000 if daily_drawdown_k > 0 else None
+    include_negatives = st.session_state.get(f"{file_name}_include_neg",  False)
+    only_positive     = st.session_state.get(f"{file_name}_only_pos",     False)
+    show_above_100    = st.session_state.get(f"{file_name}_above_100",    False)
+    date_choice       = st.session_state.get(f"{file_name}_date_choice",  "Opening Date")
 
     # ── Cálculos ────────────────────────────
     df_agg = aggregate_by_date(df, date_choice)
@@ -894,297 +834,494 @@ def main():
         df_daily_loss = compute_daily_loss_analysis(df, date_choice, account_value, daily_loss_limit)
         soft_breach_dates = df_daily_loss.loc[df_daily_loss["Soft Breach"], "Data"].tolist()
 
-    st.divider()
-    st.markdown("""
+    tab_params, tab_dash = st.tabs(["⚙️ Parâmetros & Resultados", "📊 Dashboard"])
+
+    with tab_dash:
+        # ── Donuts de Acompanhamento ─────────────
+        show_profit_donut = profit_target_k > 0 and account_value > 0
+        show_dd_donut = max_drawdown_k > 0 and account_value > 0
+        show_daily_donut = daily_drawdown_k > 0 and account_value > 0
+
+        if show_profit_donut or show_dd_donut or show_daily_donut:
+            # ── Cálculos de stats ─────────────────
+            wins = df[df["Trade PnL"] > 0]["Trade PnL"]
+            losses = df[df["Trade PnL"] < 0]["Trade PnL"]
+            total_trades = len(df)
+            win_rate = (len(wins) / total_trades * 100) if total_trades > 0 else 0.0
+            avg_win = wins.mean() if len(wins) > 0 else 0.0
+            avg_loss = losses.mean() if len(losses) > 0 else 0.0
+            profit_factor = (wins.sum() / abs(losses.sum())) if len(losses) > 0 and losses.sum() != 0 else float("inf")
+            best_trade = df["Trade PnL"].max() if total_trades > 0 else 0.0
+            worst_trade = df["Trade PnL"].min() if total_trades > 0 else 0.0
+            pf_str = f"{profit_factor:.2f}" if profit_factor != float("inf") else "∞"
+
+            dd_type_label = st.session_state.get(f"{file_name}_drawdown_type", "Static")
+            # first_date = df["Opening Date"].min().strftime("%d/%m/%Y") if len(df) > 0 else "—"
+            hwm_str = f"${hwm_balance:,.2f}" if hwm_balance is not None else "—"
+            dd_max_str = f"${max_drawdown_val:,.2f}" if max_drawdown_val is not None else "—"
+
+            # Status: prioridade Aprovado > Failed > Temporary Blocked > Active
+            _last_day_pnl = float(df_agg.iloc[-1]["PnL do Dia"]) if len(df_agg) > 0 else 0.0
+            _current_daily_dd = abs(min(0.0, _last_day_pnl))
+            _daily_limit = daily_drawdown_k * 1_000
+            if show_profit_donut and balance >= account_value + profit_target_k * 1_000:
+                status_text, status_color = "Aprovado", "#27ae60"
+            elif show_dd_donut and max_drawdown_val is not None and balance <= max_drawdown_val:
+                status_text, status_color = "Failed", "#e74c3c"
+            elif show_daily_donut and _daily_limit > 0 and _current_daily_dd >= _daily_limit:
+                status_text, status_color = "Temporary Blocked", "#f0a500"
+            else:
+                status_text, status_color = "Active", "#3498db"
+
+            # ── Linha superior: donuts + painel da conta ──
+            n_donuts = sum([show_profit_donut, show_dd_donut, show_daily_donut])
+            top_cols = st.columns([3] * n_donuts + [3])
+            col_idx = 0
+
+            if show_profit_donut:
+                profit_limit = profit_target_k * 1_000
+                current_profit = max(0.0, true_total_pnl)
+                profit_pct = (current_profit / profit_limit * 100) if profit_limit > 0 else 0.0
+                with top_cols[col_idx]:
+                    st.plotly_chart(_build_donut(profit_pct, "#27ae60"), use_container_width=True)
+                    st.markdown(
+                        f"<div style='text-align:center; margin-top:-20px;'>"
+                        f"<span style='color:#aaaaaa; font-size:13px;'>Meta de Lucro</span><br>"
+                        f"<b style='color:white; font-size:16px;'>${profit_limit:,.2f}</b><br>"
+                        f"<span style='color:#27ae60; font-size:12px;'>Lucro Atual</span><br>"
+                        f"<b style='color:#27ae60; font-size:15px;'>${current_profit:,.2f}</b>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                col_idx += 1
+
+            if show_dd_donut:
+                dd_limit = max_drawdown_k * 1_000
+                current_dd = max(0.0, account_value - balance)
+                dd_pct = (current_dd / dd_limit * 100) if dd_limit > 0 else 0.0
+                with top_cols[col_idx]:
+                    st.plotly_chart(_build_donut(dd_pct, "#e74c3c"), use_container_width=True)
+                    st.markdown(
+                        f"<div style='text-align:center; margin-top:-20px;'>"
+                        f"<span style='color:#aaaaaa; font-size:13px;'>Perda Máxima</span><br>"
+                        f"<b style='color:white; font-size:16px;'>${dd_limit:,.2f}</b><br>"
+                        f"<span style='color:#e74c3c; font-size:12px;'>Drawdown ({dd_type_label})</span><br>"
+                        f"<b style='color:#e74c3c; font-size:15px;'>${current_dd:,.2f}</b>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                col_idx += 1
+
+            if show_daily_donut:
+                daily_limit = daily_drawdown_k * 1_000
+                last_day_pnl = float(df_agg.iloc[-1]["PnL do Dia"]) if len(df_agg) > 0 else 0.0
+                current_daily_dd = abs(min(0.0, last_day_pnl))
+                daily_pct = (current_daily_dd / daily_limit * 100) if daily_limit > 0 else 0.0
+                with top_cols[col_idx]:
+                    st.plotly_chart(_build_donut(daily_pct, "#f0a500"), use_container_width=True)
+                    st.markdown(
+                        f"<div style='text-align:center; margin-top:-20px;'>"
+                        f"<span style='color:#aaaaaa; font-size:13px;'>Máx. Perda Diária</span><br>"
+                        f"<b style='color:white; font-size:16px;'>${daily_limit:,.2f}</b><br>"
+                        f"<span style='color:#f0a500; font-size:12px;'>Drawdown Diário</span><br>"
+                        f"<b style='color:#f0a500; font-size:15px;'>${current_daily_dd:,.2f}</b>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                col_idx += 1
+
+            # ── Painel da conta (coluna direita) ──
+            with top_cols[col_idx]:
+                info_l, info_r = st.columns(2)
+                with info_l:
+                    st.markdown(
+                        f"""<div style="display:flex; flex-direction:column; gap:8px; padding-top:4px;">
+  <div style="background:#151820; border-radius:10px; padding:10px 12px;">
+    <div style="color:#888; font-size:11px; margin-bottom:5px;">Status</div>
+    <span style="background:{status_color}; color:white; font-size:12px; font-weight:700; padding:3px 10px; border-radius:6px;">{status_text}</span>
+  </div>
+  <div style="background:#151820; border-radius:10px; padding:10px 12px;">
+    <div style="color:#888; font-size:11px; margin-bottom:3px;">Tamanho da Conta</div>
+    <div style="color:white; font-size:13px; font-weight:700;">${account_value:,.2f}</div>
+  </div>
+  <div style="background:#151820; border-radius:10px; padding:10px 12px;">
+    <div style="color:#888; font-size:11px; margin-bottom:3px;">Saldo Atual</div>
+    <div style="color:white; font-size:13px; font-weight:700;">${balance:,.2f}</div>
+  </div>
+  <!-- Iniciado em removido temporariamente -->
+</div>""",
+                        unsafe_allow_html=True,
+                    )
+                with info_r:
+                    st.markdown(
+                        f"""<div style="display:flex; flex-direction:column; gap:8px; padding-top:4px;">
+  <div style="background:#151820; border-radius:10px; padding:10px 12px;">
+    <div style="color:#888; font-size:11px; margin-bottom:3px;">HWM</div>
+    <div style="color:white; font-size:13px; font-weight:700;">{hwm_str}</div>
+  </div>
+  <div style="background:#151820; border-radius:10px; padding:10px 12px;">
+    <div style="color:#888; font-size:11px; margin-bottom:3px;">Saldo Flutuante</div>
+    <div style="color:white; font-size:13px; font-weight:700;">—</div>
+  </div>
+  <div style="background:#151820; border-radius:10px; padding:10px 12px;">
+    <div style="color:#888; font-size:11px; margin-bottom:3px;">Drawdown Máximo</div>
+    <div style="color:white; font-size:13px; font-weight:700;">{dd_max_str}</div>
+  </div>
+</div>""",
+                        unsafe_allow_html=True,
+                    )
+
+            # ── Linha inferior: stats de negociação ──
+            st.write("")
+            s1, s2, s3, s4, s5, s6, s7 = st.columns(7)
+
+            def _stat_card_icon(col, icon_bg, icon, label, value, value_color):
+                col.markdown(
+                    f"""<div style="background:#151820; border-radius:10px; padding:12px 10px; display:flex; align-items:center; gap:10px; height:64px;">
+  <span style="background:{icon_bg}; border-radius:8px; padding:7px; font-size:15px; flex-shrink:0;">{icon}</span>
+  <div>
+    <div style="color:#888; font-size:11px; line-height:1.2;">{label}</div>
+    <div style="color:{value_color}; font-size:14px; font-weight:700; line-height:1.4;">{value}</div>
+  </div>
+</div>""",
+                    unsafe_allow_html=True,
+                )
+
+            def _stat_card_plain(col, label, value):
+                col.markdown(
+                    f"""<div style="background:#151820; border-radius:10px; padding:12px 10px; text-align:center; height:64px; display:flex; flex-direction:column; justify-content:center;">
+  <div style="color:#888; font-size:11px; margin-bottom:3px;">{label}</div>
+  <div style="color:white; font-size:18px; font-weight:700;">{value}</div>
+</div>""",
+                    unsafe_allow_html=True,
+                )
+
+            _stat_card_icon(s1, "#1a3a2a", "📈", "Melhor Negociação", f"${best_trade:,.2f}", "#27ae60")
+            _stat_card_icon(s2, "#3a1a1a", "📉", "Pior Negociação", f"${worst_trade:,.2f}", "#e74c3c")
+            _stat_card_icon(s3, "#1a2a3a", "📊", "Média de Lucro", f"${avg_win:,.2f}", "#3498db")
+            _stat_card_icon(s4, "#3a2a1a", "📊", "Média de Perda", f"${avg_loss:,.2f}", "#f0a500")
+            _stat_card_plain(s5, "Negociações", str(total_trades))
+            _stat_card_plain(s6, "Taxa de Vitória", f"{win_rate:.2f}%")
+            _stat_card_plain(s7, "Fator de Lucro", pf_str)
+
+            st.divider()
+
+        # ── Gráfico de saldo ─────────────────────
+        chart_col, hwm_col, tog_col, dd_type_col, btn_col = st.columns([4, 2, 2, 3, 1])
+        with chart_col:
+            st.subheader("📈 Acompanhamento de Saldo")
+        with hwm_col:
+            if hwm_balance is not None:
+                st.metric(
+                    "🏆 High Water Mark",
+                    f"${hwm_balance:,.2f}",
+                    delta=f"+${hwm_balance - account_value:,.2f}" if hwm_balance > account_value else "= Initial Balance",
+                    delta_color="normal" if hwm_balance > account_value else "off",
+                    help="Maior saldo já atingido pela conta no período analisado.",
+                )
+        with tog_col:
+            st.write("")
+            per_trade_mode = st.toggle("Por trade", value=False, help="Exibe um ponto por operação individual em vez de por dia.")
+        with dd_type_col:
+            drawdown_type = st.selectbox(
+                "Tipo de Drawdown",
+                options=["Static", "EOD", "Trailing"],
+                help=(
+                    "**Static**: limite fixo baseado no saldo inicial — nunca se move.\n\n"
+                    "**EOD (End of Day)**: limite recalculado ao fechamento de cada dia "
+                    "com base no saldo final do dia.\n\n"
+                    "**Trailing**: acompanha o maior saldo atingido — "
+                    "sobe conforme novos picos são alcançados, nunca desce."
+                ),
+                disabled=max_drawdown_val is None,
+                key=f"{file_name}_drawdown_type",
+                on_change=_auto_save_drawdown_type,
+                args=(file_name,),
+            )
+        with btn_col:
+            st.write("")
+            st.write("")
+            if st.button("🔄", help="Atualizar gráfico"):
+                st.rerun()
+
+        if per_trade_mode:
+            fig = build_trade_chart(
+                df_trades=df,
+                date_col=date_choice,
+                initial_balance=account_value,
+                max_drawdown=max_drawdown_val,
+                profit_target=profit_target_val,
+                daily_loss_limit=daily_loss_limit,
+                drawdown_type=drawdown_type,
+                soft_breach_dates=soft_breach_dates or None,
+            )
+        else:
+            fig = build_balance_chart(
+                trade_dates=df_agg["Data"],
+                daily_pnl_values=df_agg["PnL do Dia"],
+                initial_balance=account_value,
+                max_drawdown=max_drawdown_val,
+                profit_target=profit_target_val,
+                daily_loss_limit=daily_loss_limit,
+                drawdown_type=drawdown_type,
+                soft_breach_dates=soft_breach_dates or None,
+            )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # ── Histórico Daily Loss / Soft Breaches ─
+        if df_daily_loss is not None:
+            with st.expander("🔴 Histórico de Daily Loss Limit", expanded=False):
+                n_breaches = int(df_daily_loss["Soft Breach"].sum())
+                st.metric(
+                    "Soft Breaches Histórico",
+                    n_breaches,
+                    delta="dias com bloqueio temporário",
+                    delta_color="off",
+                )
+                if n_breaches > 0:
+                    st.warning(
+                        f"**{n_breaches} dia(s) com Soft Breach detectado(s).**  "
+                        "A conta não foi encerrada, mas nesses dias o trading foi bloqueado temporariamente."
+                    )
+                else:
+                    st.success("Nenhum Soft Breach detectado no período analisado.")
+
+                dl_display = df_daily_loss.copy()
+                dl_display["Soft Breach"] = dl_display["Soft Breach"].map(
+                    lambda x: "🔴 Soft Breach" if x else "✅ OK"
+                )
+                styled_dl = (
+                    dl_display.style
+                    .format({
+                        "Saldo Início do Dia": "${:,.2f}",
+                        "Pior Equity no Dia":  "${:,.2f}",
+                        "Perda Máx. no Dia":   "${:,.2f}",
+                        "Limite Diário":        "${:,.2f}",
+                        "Restante":            "${:,.2f}",
+                    })
+                    .map(
+                        lambda v: "color: #c0392b; font-weight: bold" if v == "🔴 Soft Breach" else "color: #27ae60",
+                        subset=["Soft Breach"],
+                    )
+                )
+                st.dataframe(styled_dl, use_container_width=True, hide_index=True)
+
+    with tab_params:
+        # ── Parâmetros principais ───────────────
+        st.subheader("⚙️ Parâmetros da Conta")
+        col_a, col_b, col_c = st.columns([1, 1, 1])
+        with col_a:
+            date_choice = st.selectbox(
+                "📅 Agregar por qual data?",
+                options=["Opening Date", "Closing Date"],
+                key=f"{file_name}_date_choice",
+                help="Escolha a coluna de data base para a consolidação diária.",
+            )
+        with col_b:
+            account_value_k = st.number_input(
+                "💰 Valor inicial da conta (em milhares)",
+                min_value=0.0,
+                step=1.0,
+                format="%.0f",
+                help="Digite o valor em milhares. Ex: 25 = $25.000",
+                key=f"{file_name}_account_k",
+            )
+        with col_c:
+            limit_pct = st.number_input(
+                "⚠️ Limite de consistência (%)",
+                min_value=1.0,
+                max_value=100.0,
+                step=1.0,
+                help="Dias cujo PnL represente mais do que este percentual do total serão sinalizados.",
+                key=f"{file_name}_limit_pct",
+            )
+
+        col_d, col_e, col_f = st.columns([1, 1, 1])
+        with col_d:
+            max_drawdown_k = st.number_input(
+                "📉 Drawdown máximo (em milhares)",
+                min_value=0.0,
+                step=1.0,
+                format="%.2f",
+                help="Valor abaixo do inicial. Ex: 4 = $4.000 abaixo → linha em $146.000 (conta de $150k)",
+                key=f"{file_name}_drawdown_k",
+            )
+        with col_e:
+            profit_target_k = st.number_input(
+                "🎯 Meta de lucro (em milhares)",
+                min_value=0.0,
+                step=1.0,
+                format="%.2f",
+                help="Valor acima do inicial. Ex: 9 = $9.000 acima → linha em $159.000 (conta de $150k)",
+                key=f"{file_name}_profit_k",
+            )
+        with col_f:
+            daily_drawdown_k = st.number_input(
+                "🟠 Drawdown diário (em milhares)",
+                min_value=0.0,
+                step=1.0,
+                format="%.2f",
+                help="Perda máxima permitida por dia. Ex: 1 = $1.000",
+                key=f"{file_name}_daily_dd_k",
+            )
+
+        if st.button("💾 Salvar configurações", help="Salva Saldo, Drawdown e Profit para esta planilha"):
+            _save_settings(
+                file_name,
+                st.session_state.get(f"{file_name}_account_k", 0.0),
+                st.session_state.get(f"{file_name}_drawdown_k", 0.0),
+                st.session_state.get(f"{file_name}_profit_k", 0.0),
+                st.session_state.get(f"{file_name}_daily_dd_k", 0.0),
+                st.session_state.get(f"{file_name}_drawdown_type", "Static"),
+                st.session_state.get(f"{file_name}_limit_pct", 40.0),
+            )
+            st.toast("Configurações salvas!", icon="✅")
+
+        # ── Toggles ─────────────────────────────
+        st.divider()
+        tog1, tog2, tog3 = st.columns(3)
+        with tog1:
+            include_negatives = st.toggle(
+                "Incluir dias negativos na regra de %",
+                value=False,
+                key=f"{file_name}_include_neg",
+                help="Por padrão, dias com PnL negativo não são sinalizados como violadores do limite. "
+                     "Ative para verificar o valor absoluto de todos os dias.",
+            )
+        with tog2:
+            only_positive = st.toggle(
+                "Exibir apenas dias positivos",
+                value=False,
+                key=f"{file_name}_only_pos",
+                help="Filtra a tabela e o gráfico para mostrar somente dias com PnL > 0.",
+            )
+        with tog3:
+            show_above_100 = st.toggle(
+                "Destacar dias acima de $100",
+                value=False,
+                key=f"{file_name}_above_100",
+                help="Exibe uma seção separada listando os dias com PnL consolidado acima de $100.",
+            )
+
+        # ── Métricas ─────────────────────────────
+        st.markdown("""
 <style>
 [data-testid="stMetricLabel"] { font-size: 20px !important; }
 [data-testid="stMetricValue"] { font-size: 30px !important; }
 [data-testid="stMetricDelta"] { font-size: 12px !important; }
 </style>
 """, unsafe_allow_html=True)
-    m1, m2, m2b, m3, m3b, m4, m5, m6 = st.columns(8)
-    m1.metric("Total de Trades", len(df))
-    m2.metric("Dias com Operação", len(df_result))
-    diff_pct = current_max_pct - limit_pct
-    m2b.metric(
-        "Consistência Atual",
-        f"{current_max_pct:.2f}%",
-        delta=f"{diff_pct:+.2f}% vs {limit_pct:.0f}%",
-        delta_color="inverse",
-    )
-    m3.metric(
-        "PnL Total Geral",
-        f"{total_pnl:,.2f}",
-        delta=f"{limit_pct:.0f}% = {total_pnl * limit_pct / 100:,.2f}",
-        delta_color="off",
-    )
-    if account_value > 0:
-        m3b.metric(
-            "Saldo da Conta",
-            f"{balance:,.2f}",
-            delta=f"{true_total_pnl:+,.2f}",
-            delta_color="normal",
+        m1, m2, m2b, m3, m3b, m4, m5, m6 = st.columns(8)
+        m1.metric("Total de Trades", len(df))
+        m2.metric("Dias com Operação", len(df_result))
+        diff_pct = current_max_pct - limit_pct
+        m2b.metric(
+            "Consistência Atual",
+            f"{current_max_pct:.2f}%",
+            delta=f"{diff_pct:+.2f}% vs {limit_pct:.0f}%",
+            delta_color="inverse",
         )
-    m4.metric(
-        "Dias que Excedem o Limite",
-        int(violations),
-        delta=f"{limit_pct:.0f}% limite",
-        delta_color="inverse" if violations > 0 else "off",
-    )
-    m5.metric("Dias acima de $100", len(days_above_100))
-    m6.metric(
-        "Regra de Consistência",
-        "✅ Dentro" if consistency_ok else "🔴 Violada",
-    )
-
-
-    # ── Tabela consolidada ──────────────────
-    st.subheader("📋 Resultado Consolidado por Data")
-
-    display_df = df_display.copy()
-    display_df["% do Total"] = display_df["% do Total"].map(lambda x: f"{x:.2f}%")
-    display_df["Excede Limite"] = display_df["Excede Limite"].map(
-        lambda x: "🔴 Sim" if x else "✅ Não"
-    )
-    display_df = display_df.rename(columns={"Excede Limite": f"Excede {limit_pct:.0f}%?"})
-    styled = display_df.style.format({"PnL do Dia": "{:,.2f}"}).map(_color_pnl, subset=["PnL do Dia"])
-
-    st.dataframe(styled, use_container_width=True, hide_index=True)
-
-    # ── Plano de recuperação ─────────────────
-    if not consistency_ok:
-        violating_days = df_result[df_result["Excede Limite"]]
-        v_max = violating_days["PnL do Dia"].max()
-        required_total = v_max * 100 / limit_pct
-        additional_needed = required_total - total_pnl
-        p = limit_pct / 100
-
-        if total_pnl > 0:
-            days_needed = int(np.ceil(np.log(required_total / total_pnl) / np.log(1 + p)))
-        else:
-            days_needed = int(np.ceil(additional_needed / (required_total * p)))
-
-        st.warning(
-            f"**Para entrar na regra de consistência você precisa de:**\n\n"
-            f"- **PnL adicional necessário:** ${additional_needed:,.2f} "
-            f"(atual: ${total_pnl:,.2f} → necessário: ${required_total:,.2f})\n"
-            f"- **Dias mínimos:** {days_needed} dia(s) com ganho máximo de "
-            f"**{limit_pct:.0f}% do total acumulado no dia anterior**"
+        m3.metric(
+            "PnL Total Geral",
+            f"{total_pnl:,.2f}",
+            delta=f"{limit_pct:.0f}% = {total_pnl * limit_pct / 100:,.2f}",
+            delta_color="off",
+        )
+        if account_value > 0:
+            m3b.metric(
+                "Saldo da Conta",
+                f"{balance:,.2f}",
+                delta=f"{true_total_pnl:+,.2f}",
+                delta_color="normal",
+            )
+        m4.metric(
+            "Dias que Excedem o Limite",
+            int(violations),
+            delta=f"{limit_pct:.0f}% limite",
+            delta_color="inverse" if violations > 0 else "off",
+        )
+        m5.metric("Dias acima de $100", len(days_above_100))
+        m6.metric(
+            "Regra de Consistência",
+            "✅ Dentro" if consistency_ok else "🔴 Violada",
         )
 
-        # Tabela dia a dia
-        running = total_pnl
-        plan_rows = []
-        for d in range(1, days_needed + 1):
-            max_day_pnl = running * p
-            running += max_day_pnl
-            plan_rows.append({
-                "Dia": d,
-                f"PnL máx. do dia ({limit_pct:.0f}% do total anterior)": max_day_pnl,
-                "Total acumulado após o dia": running,
-                "Regra OK?": "✅ Sim" if running >= required_total else "⏳ Não ainda",
-            })
-        df_plan = pd.DataFrame(plan_rows)
-        styled_plan = (
-            df_plan.style
-            .format({
-                f"PnL máx. do dia ({limit_pct:.0f}% do total anterior)": "${:,.2f}",
-                "Total acumulado após o dia": "${:,.2f}",
-            })
-            .map(lambda v: "color: #27ae60" if v == "✅ Sim" else ("color: #f0a500" if v == "⏳ Não ainda" else ""), subset=["Regra OK?"])
-        )
-        st.dataframe(styled_plan, use_container_width=True, hide_index=True)
-
-    # ── Donuts de Acompanhamento ─────────────
-    show_profit_donut = profit_target_k > 0 and account_value > 0
-    show_dd_donut = max_drawdown_k > 0 and account_value > 0
-    show_daily_donut = daily_drawdown_k > 0 and account_value > 0
-
-    if show_profit_donut or show_dd_donut or show_daily_donut:
-        donut_keys = (
-            (["profit"] if show_profit_donut else [])
-            + (["dd"] if show_dd_donut else [])
-            + (["daily"] if show_daily_donut else [])
-        )
-        donut_cols = st.columns(len(donut_keys))
-        col_idx = 0
-
-        if show_profit_donut:
-            profit_limit = profit_target_k * 1_000
-            current_profit = max(0.0, true_total_pnl)
-            profit_pct = (current_profit / profit_limit * 100) if profit_limit > 0 else 0.0
-            with donut_cols[col_idx]:
-                st.plotly_chart(_build_donut(profit_pct, "#27ae60"), use_container_width=True)
-                st.markdown(
-                    f"<div style='text-align:center; margin-top:-20px;'>"
-                    f"<span style='color:#aaaaaa; font-size:13px;'>Meta de Lucro</span><br>"
-                    f"<b style='color:white; font-size:16px;'>${profit_limit:,.2f}</b><br>"
-                    f"<span style='color:#27ae60; font-size:12px;'>Lucro Atual</span><br>"
-                    f"<b style='color:#27ae60; font-size:15px;'>${current_profit:,.2f}</b>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-            col_idx += 1
-
-        if show_dd_donut:
-            dd_limit = max_drawdown_k * 1_000
-            current_dd = max(0.0, account_value - balance)
-            dd_pct = (current_dd / dd_limit * 100) if dd_limit > 0 else 0.0
-            dd_type_label = st.session_state.get(f"{file_name}_drawdown_type", "Static")
-            with donut_cols[col_idx]:
-                st.plotly_chart(_build_donut(dd_pct, "#e74c3c"), use_container_width=True)
-                st.markdown(
-                    f"<div style='text-align:center; margin-top:-20px;'>"
-                    f"<span style='color:#aaaaaa; font-size:13px;'>Perda Máxima</span><br>"
-                    f"<b style='color:white; font-size:16px;'>${dd_limit:,.2f}</b><br>"
-                    f"<span style='color:#e74c3c; font-size:12px;'>Drawdown ({dd_type_label})</span><br>"
-                    f"<b style='color:#e74c3c; font-size:15px;'>${current_dd:,.2f}</b>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-            col_idx += 1
-
-        if show_daily_donut:
-            daily_limit = daily_drawdown_k * 1_000
-            last_day_pnl = float(df_agg.iloc[-1]["PnL do Dia"]) if len(df_agg) > 0 else 0.0
-            current_daily_dd = abs(min(0.0, last_day_pnl))
-            daily_pct = (current_daily_dd / daily_limit * 100) if daily_limit > 0 else 0.0
-            with donut_cols[col_idx]:
-                st.plotly_chart(_build_donut(daily_pct, "#f0a500"), use_container_width=True)
-                st.markdown(
-                    f"<div style='text-align:center; margin-top:-20px;'>"
-                    f"<span style='color:#aaaaaa; font-size:13px;'>Máx. Perda Diária</span><br>"
-                    f"<b style='color:white; font-size:16px;'>${daily_limit:,.2f}</b><br>"
-                    f"<span style='color:#f0a500; font-size:12px;'>Drawdown Diário</span><br>"
-                    f"<b style='color:#f0a500; font-size:15px;'>${current_daily_dd:,.2f}</b>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-
+        # ── Tabela consolidada ──────────────────
         st.divider()
-
-    # ── Gráfico de saldo ─────────────────────
-    chart_col, hwm_col, tog_col, dd_type_col, btn_col = st.columns([4, 2, 2, 3, 1])
-    with chart_col:
-        st.subheader("📈 Acompanhamento de Saldo")
-    with hwm_col:
-        if hwm_balance is not None:
-            st.metric(
-                "🏆 High Water Mark",
-                f"${hwm_balance:,.2f}",
-                delta=f"+${hwm_balance - account_value:,.2f}" if hwm_balance > account_value else "= Initial Balance",
-                delta_color="normal" if hwm_balance > account_value else "off",
-                help="Maior saldo já atingido pela conta no período analisado.",
-            )
-    with tog_col:
-        st.write("")
-        per_trade_mode = st.toggle("Por trade", value=False, help="Exibe um ponto por operação individual em vez de por dia.")
-    with dd_type_col:
-        drawdown_type = st.selectbox(
-            "Tipo de Drawdown",
-            options=["Static", "EOD", "Trailing"],
-            help=(
-                "**Static**: limite fixo baseado no saldo inicial — nunca se move.\n\n"
-                "**EOD (End of Day)**: limite recalculado ao fechamento de cada dia "
-                "com base no saldo final do dia.\n\n"
-                "**Trailing**: acompanha o maior saldo atingido — "
-                "sobe conforme novos picos são alcançados, nunca desce."
-            ),
-            disabled=max_drawdown_val is None,
-            key=f"{file_name}_drawdown_type",
-            on_change=_auto_save_drawdown_type,
-            args=(file_name,),
+        st.subheader("📋 Resultado Consolidado por Data")
+        display_df = df_display.copy()
+        display_df["% do Total"] = display_df["% do Total"].map(lambda x: f"{x:.2f}%")
+        display_df["Excede Limite"] = display_df["Excede Limite"].map(
+            lambda x: "🔴 Sim" if x else "✅ Não"
         )
-    with btn_col:
-        st.write("")
-        st.write("")
-        if st.button("🔄", help="Atualizar gráfico"):
-            st.rerun()
+        display_df = display_df.rename(columns={"Excede Limite": f"Excede {limit_pct:.0f}%?"})
+        styled = display_df.style.format({"PnL do Dia": "{:,.2f}"}).map(_color_pnl, subset=["PnL do Dia"])
+        st.dataframe(styled, use_container_width=True, hide_index=True)
 
-    if per_trade_mode:
-        fig = build_trade_chart(
-            df_trades=df,
-            date_col=date_choice,
-            initial_balance=account_value,
-            max_drawdown=max_drawdown_val,
-            profit_target=profit_target_val,
-            daily_loss_limit=daily_loss_limit,
-            drawdown_type=drawdown_type,
-            soft_breach_dates=soft_breach_dates or None,
-        )
-    else:
-        fig = build_balance_chart(
-            trade_dates=df_agg["Data"],
-            daily_pnl_values=df_agg["PnL do Dia"],
-            initial_balance=account_value,
-            max_drawdown=max_drawdown_val,
-            profit_target=profit_target_val,
-            daily_loss_limit=daily_loss_limit,
-            drawdown_type=drawdown_type,
-            soft_breach_dates=soft_breach_dates or None,
-        )
-    st.plotly_chart(fig, use_container_width=True)
+        # ── Plano de recuperação ─────────────────
+        if not consistency_ok:
+            violating_days = df_result[df_result["Excede Limite"]]
+            v_max = violating_days["PnL do Dia"].max()
+            required_total = v_max * 100 / limit_pct
+            additional_needed = required_total - total_pnl
+            p = limit_pct / 100
 
-    # ── Histórico Daily Loss / Soft Breaches ─
-    if df_daily_loss is not None:
-        with st.expander("🔴 Histórico de Daily Loss Limit", expanded=False):
-            n_breaches = int(df_daily_loss["Soft Breach"].sum())
-            st.metric(
-                "Soft Breaches Histórico",
-                n_breaches,
-                delta="dias com bloqueio temporário",
-                delta_color="off",
-            )
-            if n_breaches > 0:
-                st.warning(
-                    f"**{n_breaches} dia(s) com Soft Breach detectado(s).**  "
-                    "A conta não foi encerrada, mas nesses dias o trading foi bloqueado temporariamente."
-                )
+            if total_pnl > 0:
+                days_needed = int(np.ceil(np.log(required_total / total_pnl) / np.log(1 + p)))
             else:
-                st.success("Nenhum Soft Breach detectado no período analisado.")
+                days_needed = int(np.ceil(additional_needed / (required_total * p)))
 
-            dl_display = df_daily_loss.copy()
-            dl_display["Soft Breach"] = dl_display["Soft Breach"].map(
-                lambda x: "🔴 Soft Breach" if x else "✅ OK"
+            st.warning(
+                f"**Para entrar na regra de consistência você precisa de:**\n\n"
+                f"- **PnL adicional necessário:** ${additional_needed:,.2f} "
+                f"(atual: ${total_pnl:,.2f} → necessário: ${required_total:,.2f})\n"
+                f"- **Dias mínimos:** {days_needed} dia(s) com ganho máximo de "
+                f"**{limit_pct:.0f}% do total acumulado no dia anterior**"
             )
-            styled_dl = (
-                dl_display.style
-                .format({
-                    "Saldo Início do Dia": "${:,.2f}",
-                    "Pior Equity no Dia":  "${:,.2f}",
-                    "Perda Máx. no Dia":   "${:,.2f}",
-                    "Limite Diário":        "${:,.2f}",
-                    "Restante":            "${:,.2f}",
+            running = total_pnl
+            plan_rows = []
+            for d in range(1, days_needed + 1):
+                max_day_pnl = running * p
+                running += max_day_pnl
+                plan_rows.append({
+                    "Dia": d,
+                    f"PnL máx. do dia ({limit_pct:.0f}% do total anterior)": max_day_pnl,
+                    "Total acumulado após o dia": running,
+                    "Regra OK?": "✅ Sim" if running >= required_total else "⏳ Não ainda",
                 })
-                .map(
-                    lambda v: "color: #c0392b; font-weight: bold" if v == "🔴 Soft Breach" else "color: #27ae60",
-                    subset=["Soft Breach"],
-                )
+            df_plan = pd.DataFrame(plan_rows)
+            styled_plan = (
+                df_plan.style
+                .format({
+                    f"PnL máx. do dia ({limit_pct:.0f}% do total anterior)": "${:,.2f}",
+                    "Total acumulado após o dia": "${:,.2f}",
+                })
+                .map(lambda v: "color: #27ae60" if v == "✅ Sim" else ("color: #f0a500" if v == "⏳ Não ainda" else ""), subset=["Regra OK?"])
             )
-            st.dataframe(styled_dl, use_container_width=True, hide_index=True)
+            st.dataframe(styled_plan, use_container_width=True, hide_index=True)
 
-    # ── Dias acima de $100 ──────────────────
-    if show_above_100:
-        st.subheader("💰 Dias com PnL acima de $100")
-        if len(days_above_100) > 0:
-            above_df = days_above_100.copy()
-            above_df["% do Total"] = above_df["% do Total"].map(lambda x: f"{x:.2f}%")
-            above_df = above_df.drop(columns=["Excede Limite"])
-            styled_above = above_df.style.format({"PnL do Dia": "{:,.2f}"}).map(_color_pnl, subset=["PnL do Dia"])
-            st.dataframe(styled_above, use_container_width=True, hide_index=True)
+        # ── Dias acima de $100 ──────────────────
+        if show_above_100:
+            st.subheader("💰 Dias com PnL acima de $100")
+            if len(days_above_100) > 0:
+                above_df = days_above_100.copy()
+                above_df["% do Total"] = above_df["% do Total"].map(lambda x: f"{x:.2f}%")
+                above_df = above_df.drop(columns=["Excede Limite"])
+                styled_above = above_df.style.format({"PnL do Dia": "{:,.2f}"}).map(_color_pnl, subset=["PnL do Dia"])
+                st.dataframe(styled_above, use_container_width=True, hide_index=True)
+            else:
+                st.info("Nenhum dia teve PnL consolidado acima de $100.")
+
+        # ── Detalhes de violações ───────────────
+        if violations > 0:
+            st.subheader(f"🚨 Dias que excedem {limit_pct:.0f}% do total")
+            violating = df_result[df_result["Excede Limite"]].copy()
+            violating["% do Total"] = violating["% do Total"].map(lambda x: f"{x:.2f}%")
+            violating = violating.drop(columns=["Excede Limite"])
+            styled_viol = violating.style.format({"PnL do Dia": "{:,.2f}"}).map(_color_pnl, subset=["PnL do Dia"])
+            st.dataframe(styled_viol, use_container_width=True, hide_index=True)
         else:
-            st.info("Nenhum dia teve PnL consolidado acima de $100.")
-
-    # ── Detalhes de violações ───────────────
-    if violations > 0:
-        st.subheader(f"🚨 Dias que excedem {limit_pct:.0f}% do total")
-        violating = df_result[df_result["Excede Limite"]].copy()
-        violating["% do Total"] = violating["% do Total"].map(lambda x: f"{x:.2f}%")
-        violating = violating.drop(columns=["Excede Limite"])
-        styled_viol = violating.style.format({"PnL do Dia": "{:,.2f}"}).map(_color_pnl, subset=["PnL do Dia"])
-        st.dataframe(styled_viol, use_container_width=True, hide_index=True)
-    else:
-        st.success(f"Nenhum dia excedeu o limite de {limit_pct:.0f}% do total.")
+            st.success(f"Nenhum dia excedeu o limite de {limit_pct:.0f}% do total.")
 
 
 if __name__ == "__main__":
