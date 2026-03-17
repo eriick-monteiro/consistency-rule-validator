@@ -628,6 +628,38 @@ def _color_pnl(val: float) -> str:
     return ""
 
 
+def _build_donut(pct: float, color_filled: str) -> "go.Figure":
+    """Returns a donut gauge figure showing `pct`% filled."""
+    import plotly.graph_objects as _go
+    pct_c = min(100.0, max(0.0, pct))
+    remaining = 100.0 - pct_c
+    color_empty = "#1e2230"
+    fig = _go.Figure(_go.Pie(
+        values=[max(pct_c, 0.001), max(remaining, 0.001)],
+        hole=0.72,
+        marker=dict(colors=[color_filled, color_empty], line=dict(width=0)),
+        textinfo="none",
+        hoverinfo="skip",
+        sort=False,
+        direction="clockwise",
+        rotation=90,
+    ))
+    fig.update_layout(
+        showlegend=False,
+        paper_bgcolor="#0e1117",
+        plot_bgcolor="#0e1117",
+        margin=dict(t=5, b=5, l=5, r=5),
+        height=180,
+        annotations=[dict(
+            text=f"<b>{pct_c:.2f}%</b>",
+            x=0.5, y=0.5,
+            font=dict(size=18, color="white"),
+            showarrow=False,
+        )],
+    )
+    return fig
+
+
 def main():
     page_title = st.session_state.get("page_title", "CRV - Consistency Rule Validator")
     st.set_page_config(page_title=page_title, layout="wide")
@@ -962,6 +994,74 @@ def main():
             .map(lambda v: "color: #27ae60" if v == "✅ Sim" else ("color: #f0a500" if v == "⏳ Não ainda" else ""), subset=["Regra OK?"])
         )
         st.dataframe(styled_plan, use_container_width=True, hide_index=True)
+
+    # ── Donuts de Acompanhamento ─────────────
+    show_profit_donut = profit_target_k > 0 and account_value > 0
+    show_dd_donut = max_drawdown_k > 0 and account_value > 0
+    show_daily_donut = daily_drawdown_k > 0 and account_value > 0
+
+    if show_profit_donut or show_dd_donut or show_daily_donut:
+        donut_keys = (
+            (["profit"] if show_profit_donut else [])
+            + (["dd"] if show_dd_donut else [])
+            + (["daily"] if show_daily_donut else [])
+        )
+        donut_cols = st.columns(len(donut_keys))
+        col_idx = 0
+
+        if show_profit_donut:
+            profit_limit = profit_target_k * 1_000
+            current_profit = max(0.0, true_total_pnl)
+            profit_pct = (current_profit / profit_limit * 100) if profit_limit > 0 else 0.0
+            with donut_cols[col_idx]:
+                st.plotly_chart(_build_donut(profit_pct, "#27ae60"), use_container_width=True)
+                st.markdown(
+                    f"<div style='text-align:center; margin-top:-20px;'>"
+                    f"<span style='color:#aaaaaa; font-size:13px;'>Meta de Lucro</span><br>"
+                    f"<b style='color:white; font-size:16px;'>${profit_limit:,.2f}</b><br>"
+                    f"<span style='color:#27ae60; font-size:12px;'>Lucro Atual</span><br>"
+                    f"<b style='color:#27ae60; font-size:15px;'>${current_profit:,.2f}</b>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            col_idx += 1
+
+        if show_dd_donut:
+            dd_limit = max_drawdown_k * 1_000
+            current_dd = max(0.0, account_value - balance)
+            dd_pct = (current_dd / dd_limit * 100) if dd_limit > 0 else 0.0
+            dd_type_label = st.session_state.get(f"{file_name}_drawdown_type", "Static")
+            with donut_cols[col_idx]:
+                st.plotly_chart(_build_donut(dd_pct, "#e74c3c"), use_container_width=True)
+                st.markdown(
+                    f"<div style='text-align:center; margin-top:-20px;'>"
+                    f"<span style='color:#aaaaaa; font-size:13px;'>Perda Máxima</span><br>"
+                    f"<b style='color:white; font-size:16px;'>${dd_limit:,.2f}</b><br>"
+                    f"<span style='color:#e74c3c; font-size:12px;'>Drawdown ({dd_type_label})</span><br>"
+                    f"<b style='color:#e74c3c; font-size:15px;'>${current_dd:,.2f}</b>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            col_idx += 1
+
+        if show_daily_donut:
+            daily_limit = daily_drawdown_k * 1_000
+            last_day_pnl = float(df_agg.iloc[-1]["PnL do Dia"]) if len(df_agg) > 0 else 0.0
+            current_daily_dd = abs(min(0.0, last_day_pnl))
+            daily_pct = (current_daily_dd / daily_limit * 100) if daily_limit > 0 else 0.0
+            with donut_cols[col_idx]:
+                st.plotly_chart(_build_donut(daily_pct, "#f0a500"), use_container_width=True)
+                st.markdown(
+                    f"<div style='text-align:center; margin-top:-20px;'>"
+                    f"<span style='color:#aaaaaa; font-size:13px;'>Máx. Perda Diária</span><br>"
+                    f"<b style='color:white; font-size:16px;'>${daily_limit:,.2f}</b><br>"
+                    f"<span style='color:#f0a500; font-size:12px;'>Drawdown Diário</span><br>"
+                    f"<b style='color:#f0a500; font-size:15px;'>${current_daily_dd:,.2f}</b>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+        st.divider()
 
     # ── Gráfico de saldo ─────────────────────
     chart_col, hwm_col, tog_col, dd_type_col, btn_col = st.columns([4, 2, 2, 3, 1])
