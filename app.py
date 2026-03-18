@@ -474,7 +474,7 @@ def build_balance_chart(
         hovermode="x unified",
         legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#444", borderwidth=1),
         margin=dict(l=20, r=20, t=30, b=20),
-        height=420,
+        height=440,
     )
     return fig
 
@@ -615,7 +615,7 @@ def build_trade_chart(
         hovermode="x unified",
         legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#444", borderwidth=1),
         margin=dict(l=20, r=20, t=30, b=20),
-        height=420,
+        height=440,
     )
     return fig
 
@@ -680,7 +680,7 @@ def _build_donut(pct: float, color_filled: str) -> go.Figure:
         paper_bgcolor="#0e1117",
         plot_bgcolor="#0e1117",
         margin=dict(t=5, b=5, l=5, r=5),
-        height=180,
+        height=230,
         xaxis=dict(visible=False, range=[-1.1, 1.1], scaleanchor="y", scaleratio=1, fixedrange=True),
         yaxis=dict(visible=False, range=[-1.1, 1.1], fixedrange=True),
         annotations=[dict(
@@ -883,7 +883,7 @@ def main():
                 current_profit = max(0.0, true_total_pnl)
                 profit_pct = (current_profit / profit_limit * 100) if profit_limit > 0 else 0.0
                 with top_cols[col_idx]:
-                    st.plotly_chart(_build_donut(profit_pct, "#27ae60"), use_container_width=True)
+                    st.plotly_chart(_build_donut(profit_pct, "#27ae60"), use_container_width=True, key=f"{file_name}_donut_profit")
                     st.markdown(
                         f"<div style='text-align:center; margin-top:-20px;'>"
                         f"<span style='color:#aaaaaa; font-size:13px;'>Meta de Lucro</span><br>"
@@ -899,11 +899,18 @@ def main():
                 dd_limit = max_drawdown_k * 1_000
                 if dd_type_label == "Trailing" and hwm_balance is not None:
                     current_dd = max(0.0, hwm_balance - balance)
+                elif dd_type_label == "EOD":
+                    # Referência EOD: saldo ao fechamento do dia anterior (antes dos trades de hoje)
+                    last_eod_balance = (
+                        account_value + df_agg["PnL do Dia"].iloc[:-1].sum()
+                        if len(df_agg) > 1 else account_value
+                    )
+                    current_dd = max(0.0, last_eod_balance - balance)
                 else:
                     current_dd = max(0.0, account_value - balance)
                 dd_pct = (current_dd / dd_limit * 100) if dd_limit > 0 else 0.0
                 with top_cols[col_idx]:
-                    st.plotly_chart(_build_donut(dd_pct, "#e74c3c"), use_container_width=True)
+                    st.plotly_chart(_build_donut(dd_pct, "#e74c3c"), use_container_width=True, key=f"{file_name}_donut_dd")
                     st.markdown(
                         f"<div style='text-align:center; margin-top:-20px;'>"
                         f"<span style='color:#aaaaaa; font-size:13px;'>Perda Máxima</span><br>"
@@ -921,7 +928,7 @@ def main():
                 current_daily_dd = abs(min(0.0, last_day_pnl))
                 daily_pct = (current_daily_dd / daily_limit * 100) if daily_limit > 0 else 0.0
                 with top_cols[col_idx]:
-                    st.plotly_chart(_build_donut(daily_pct, "#f0a500"), use_container_width=True)
+                    st.plotly_chart(_build_donut(daily_pct, "#f0a500"), use_container_width=True, key=f"{file_name}_donut_daily")
                     st.markdown(
                         f"<div style='text-align:center; margin-top:-20px;'>"
                         f"<span style='color:#aaaaaa; font-size:13px;'>Máx. Perda Diária</span><br>"
@@ -938,18 +945,18 @@ def main():
                 info_l, info_r = st.columns(2)
                 with info_l:
                     st.markdown(
-                        f"""<div style="display:flex; flex-direction:column; gap:8px; padding-top:4px;">
-  <div style="background:#151820; border-radius:10px; padding:10px 12px;">
-    <div style="color:#888; font-size:11px; margin-bottom:5px;">Status</div>
-    <span style="background:{status_color}; color:white; font-size:12px; font-weight:700; padding:3px 10px; border-radius:6px;">{status_text}</span>
+                        f"""<div style="display:flex; flex-direction:column; gap:10px; padding-top:4px;">
+  <div style="background:#151820; border-radius:10px; padding:14px 16px;">
+    <div style="color:#888; font-size:13px; margin-bottom:7px;">Status</div>
+    <span style="background:{status_color}; color:white; font-size:14px; font-weight:700; padding:4px 14px; border-radius:6px;">{status_text}</span>
   </div>
-  <div style="background:#151820; border-radius:10px; padding:10px 12px;">
-    <div style="color:#888; font-size:11px; margin-bottom:3px;">Tamanho da Conta</div>
-    <div style="color:white; font-size:13px; font-weight:700;">${account_value:,.2f}</div>
+  <div style="background:#151820; border-radius:10px; padding:14px 16px;">
+    <div style="color:#888; font-size:13px; margin-bottom:4px;">Tamanho da Conta</div>
+    <div style="color:white; font-size:16px; font-weight:700;">${account_value:,.2f}</div>
   </div>
-  <div style="background:#151820; border-radius:10px; padding:10px 12px;">
-    <div style="color:#888; font-size:11px; margin-bottom:3px;">Saldo Atual</div>
-    <div style="color:white; font-size:13px; font-weight:700;">${balance:,.2f}</div>
+  <div style="background:#151820; border-radius:10px; padding:14px 16px;">
+    <div style="color:#888; font-size:13px; margin-bottom:4px;">Saldo Atual</div>
+    <div style="color:white; font-size:16px; font-weight:700;">${balance:,.2f}</div>
   </div>
   <!-- Iniciado em removido temporariamente -->
 </div>""",
@@ -957,18 +964,18 @@ def main():
                     )
                 with info_r:
                     st.markdown(
-                        f"""<div style="display:flex; flex-direction:column; gap:8px; padding-top:4px;">
-  <div style="background:#151820; border-radius:10px; padding:10px 12px;">
-    <div style="color:#888; font-size:11px; margin-bottom:3px;">HWM</div>
-    <div style="color:white; font-size:13px; font-weight:700;">{hwm_str}</div>
+                        f"""<div style="display:flex; flex-direction:column; gap:10px; padding-top:4px;">
+  <div style="background:#151820; border-radius:10px; padding:14px 16px;">
+    <div style="color:#888; font-size:13px; margin-bottom:4px;">HWM</div>
+    <div style="color:white; font-size:16px; font-weight:700;">{hwm_str}</div>
   </div>
-  <div style="background:#151820; border-radius:10px; padding:10px 12px;">
-    <div style="color:#888; font-size:11px; margin-bottom:3px;">Saldo Flutuante</div>
-    <div style="color:white; font-size:13px; font-weight:700;">—</div>
+  <div style="background:#151820; border-radius:10px; padding:14px 16px;">
+    <div style="color:#888; font-size:13px; margin-bottom:4px;">Saldo Flutuante</div>
+    <div style="color:white; font-size:16px; font-weight:700;">—</div>
   </div>
-  <div style="background:#151820; border-radius:10px; padding:10px 12px;">
-    <div style="color:#888; font-size:11px; margin-bottom:3px;">Drawdown Máximo</div>
-    <div style="color:white; font-size:13px; font-weight:700;">{dd_max_str}</div>
+  <div style="background:#151820; border-radius:10px; padding:14px 16px;">
+    <div style="color:#888; font-size:13px; margin-bottom:4px;">Drawdown Máximo</div>
+    <div style="color:white; font-size:16px; font-weight:700;">{dd_max_str}</div>
   </div>
 </div>""",
                         unsafe_allow_html=True,
