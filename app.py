@@ -267,13 +267,31 @@ def _save_settings(
 
 def _auto_save_drawdown_type(file_name: str) -> None:
     """Callback disparado quando o tipo de drawdown é alterado — persiste no JSON."""
+    val = st.session_state.get(f"{file_name}_drawdown_type", "Static")
+    # mantém o widget do dashboard em sincronia
+    st.session_state[f"{file_name}_drawdown_type_dash"] = val
     _save_settings(
         file_name,
         st.session_state.get(f"{file_name}_account_k",    0.0),
         st.session_state.get(f"{file_name}_drawdown_k",   0.0),
         st.session_state.get(f"{file_name}_profit_k",     0.0),
         st.session_state.get(f"{file_name}_daily_dd_k",   0.0),
-        st.session_state.get(f"{file_name}_drawdown_type", "Static"),
+        val,
+        st.session_state.get(f"{file_name}_limit_pct",    40.0),
+    )
+
+
+def _sync_dd_type_from_dash(file_name: str) -> None:
+    """Callback do selectbox do dashboard — sincroniza para a chave principal e salva."""
+    val = st.session_state.get(f"{file_name}_drawdown_type_dash", "Static")
+    st.session_state[f"{file_name}_drawdown_type"] = val
+    _save_settings(
+        file_name,
+        st.session_state.get(f"{file_name}_account_k",    0.0),
+        st.session_state.get(f"{file_name}_drawdown_k",   0.0),
+        st.session_state.get(f"{file_name}_profit_k",     0.0),
+        st.session_state.get(f"{file_name}_daily_dd_k",   0.0),
+        val,
         st.session_state.get(f"{file_name}_limit_pct",    40.0),
     )
 
@@ -796,6 +814,11 @@ def main():
     only_positive     = st.session_state.get(f"{file_name}_only_pos",     False)
     show_above_100    = st.session_state.get(f"{file_name}_above_100",    False)
     date_choice       = st.session_state.get(f"{file_name}_date_choice",  "Opening Date")
+    # inicializa chave do widget de DD type no dashboard (se ainda não existir)
+    if f"{file_name}_drawdown_type_dash" not in st.session_state:
+        st.session_state[f"{file_name}_drawdown_type_dash"] = st.session_state.get(
+            f"{file_name}_drawdown_type", "Static"
+        )
 
     # ── Cálculos ────────────────────────────
     df_agg = aggregate_by_date(df, date_choice)
@@ -1017,42 +1040,20 @@ def main():
             st.divider()
 
         # ── Gráfico de saldo ─────────────────────
-        chart_col, hwm_col, tog_col, dd_type_col, btn_col = st.columns([4, 2, 2, 3, 1])
-        with chart_col:
-            st.subheader("📈 Acompanhamento de Saldo")
-        with hwm_col:
-            if hwm_balance is not None:
-                st.metric(
-                    "🏆 High Water Mark",
-                    f"${hwm_balance:,.2f}",
-                    delta=f"+${hwm_balance - account_value:,.2f}" if hwm_balance > account_value else "= Initial Balance",
-                    delta_color="normal" if hwm_balance > account_value else "off",
-                    help="Maior saldo já atingido pela conta no período analisado.",
-                )
+        tog_col, dd_type_col = st.columns([2, 3])
         with tog_col:
-            st.write("")
             per_trade_mode = st.toggle("Por trade", value=False, help="Exibe um ponto por operação individual em vez de por dia.")
         with dd_type_col:
-            drawdown_type = st.selectbox(
+            drawdown_type = st.radio(
                 "Tipo de Drawdown",
                 options=["Static", "EOD", "Trailing"],
-                help=(
-                    "**Static**: limite fixo baseado no saldo inicial — nunca se move.\n\n"
-                    "**EOD (End of Day)**: limite recalculado ao fechamento de cada dia "
-                    "com base no saldo final do dia.\n\n"
-                    "**Trailing**: acompanha o maior saldo atingido — "
-                    "sobe conforme novos picos são alcançados, nunca desce."
-                ),
+                label_visibility="hidden",
                 disabled=max_drawdown_val is None,
+                horizontal=True,
                 key=f"{file_name}_drawdown_type",
                 on_change=_auto_save_drawdown_type,
                 args=(file_name,),
             )
-        with btn_col:
-            st.write("")
-            st.write("")
-            if st.button("🔄", help="Atualizar gráfico"):
-                st.rerun()
 
         if per_trade_mode:
             fig = build_trade_chart(
