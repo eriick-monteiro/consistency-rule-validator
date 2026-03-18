@@ -897,7 +897,10 @@ def main():
 
             if show_dd_donut:
                 dd_limit = max_drawdown_k * 1_000
-                current_dd = max(0.0, account_value - balance)
+                if dd_type_label == "Trailing" and hwm_balance is not None:
+                    current_dd = max(0.0, hwm_balance - balance)
+                else:
+                    current_dd = max(0.0, account_value - balance)
                 dd_pct = (current_dd / dd_limit * 100) if dd_limit > 0 else 0.0
                 with top_cols[col_idx]:
                     st.plotly_chart(_build_donut(dd_pct, "#e74c3c"), use_container_width=True)
