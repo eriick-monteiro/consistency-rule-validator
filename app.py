@@ -1258,7 +1258,6 @@ def main():
                         st.session_state[_cal_year_key]  = _cal_y - 1
                     else:
                         st.session_state[_cal_month_key] = _cal_m - 1
-                    st.rerun()
             with _nav_title:
                 st.markdown(
                     f"<div style='text-align:center; font-size:17px; font-weight:700; "
@@ -1272,7 +1271,6 @@ def main():
                         st.session_state[_cal_year_key]  = _cal_y + 1
                     else:
                         st.session_state[_cal_month_key] = _cal_m + 1
-                    st.rerun()
 
             # Calendar(firstweekday=6) → semanas já começam no domingo
             _weeks = _cal_module.Calendar(firstweekday=6).monthdayscalendar(_cal_y, _cal_m)
