@@ -841,8 +841,13 @@ def main():
 
     hwm_balance = None
     if account_value > 0:
-        cum = [0.0] + list(pd.Series(df_agg["PnL do Dia"].tolist()).cumsum())
-        hwm_balance = max(account_value + c for c in cum)
+        if len(df) > 0:
+            _sort_col = "Opening Date" if date_choice == "Opening Date" else "Closing Date"
+            _pnl_sorted = df.sort_values(_sort_col)["Trade PnL"].tolist()
+            _cum = list(pd.Series(_pnl_sorted).cumsum())
+            hwm_balance = max([account_value] + [account_value + c for c in _cum])
+        else:
+            hwm_balance = account_value
 
     if include_negatives:
         current_max_pct = df_result["% do Total"].abs().max()
@@ -881,7 +886,24 @@ def main():
             dd_type_label = st.session_state.get(f"{file_name}_drawdown_type", "Static")
             # first_date = df["Opening Date"].min().strftime("%d/%m/%Y") if len(df) > 0 else "—"
             hwm_str = f"${hwm_balance:,.2f}" if hwm_balance is not None else "—"
-            dd_max_str = f"${max_drawdown_val:,.2f}" if max_drawdown_val is not None else "—"
+
+            # ── Limite efetivo de drawdown (varia por modo) ──────────────────
+            _dd_amount = max_drawdown_k * 1_000
+            _last_eod_balance = (
+                account_value + df_agg["PnL do Dia"].iloc[:-1].sum()
+                if len(df_agg) > 1 else account_value
+            )
+            if max_drawdown_k > 0 and account_value > 0:
+                if dd_type_label == "Trailing" and hwm_balance is not None:
+                    current_dd_limit = min(hwm_balance - _dd_amount, account_value)
+                elif dd_type_label == "EOD":
+                    current_dd_limit = _last_eod_balance - _dd_amount
+                else:
+                    current_dd_limit = account_value - _dd_amount
+                dd_max_str = f"${current_dd_limit:,.2f}"
+            else:
+                current_dd_limit = None
+                dd_max_str = "—"
 
             # Status: prioridade Aprovado > Failed > Temporary Blocked > Active
             _last_day_pnl = float(df_agg.iloc[-1]["PnL do Dia"]) if len(df_agg) > 0 else 0.0
@@ -889,12 +911,12 @@ def main():
             _daily_limit = daily_drawdown_k * 1_000
             if show_profit_donut and balance >= account_value + profit_target_k * 1_000:
                 status_text, status_color = "Aprovado", "#27ae60"
-            elif show_dd_donut and max_drawdown_val is not None and balance <= max_drawdown_val:
+            elif show_dd_donut and current_dd_limit is not None and balance <= current_dd_limit:
                 status_text, status_color = "Failed", "#e74c3c"
             elif show_daily_donut and _daily_limit > 0 and _current_daily_dd >= _daily_limit:
                 status_text, status_color = "Temporary Blocked", "#f0a500"
             else:
-                status_text, status_color = "Active", "#3498db"
+                status_text, status_color = "Active", "#27ae60"
 
             # ── Linha superior: donuts + painel da conta ──
             n_donuts = sum([show_profit_donut, show_dd_donut, show_daily_donut])
@@ -923,12 +945,7 @@ def main():
                 if dd_type_label == "Trailing" and hwm_balance is not None:
                     current_dd = max(0.0, hwm_balance - balance)
                 elif dd_type_label == "EOD":
-                    # Referência EOD: saldo ao fechamento do dia anterior (antes dos trades de hoje)
-                    last_eod_balance = (
-                        account_value + df_agg["PnL do Dia"].iloc[:-1].sum()
-                        if len(df_agg) > 1 else account_value
-                    )
-                    current_dd = max(0.0, last_eod_balance - balance)
+                    current_dd = max(0.0, _last_eod_balance - balance)
                 else:
                     current_dd = max(0.0, account_value - balance)
                 dd_pct = (current_dd / dd_limit * 100) if dd_limit > 0 else 0.0
