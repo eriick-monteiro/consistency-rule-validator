@@ -1,8 +1,10 @@
 import bcrypt
+import calendar as _cal_module
 import hmac
 import io
 import json
 import types
+from datetime import date as _date_type
 from pathlib import Path
 
 import streamlit as st
@@ -847,8 +849,7 @@ def main():
         ("drawdown_k", "dash_drawdown_k"),
         ("daily_dd_k", "dash_daily_dd_k"),
     ]:
-        if f"{file_name}_{_dst}" not in st.session_state:
-            st.session_state[f"{file_name}_{_dst}"] = st.session_state.get(f"{file_name}_{_src}", 0.0)
+        st.session_state[f"{file_name}_{_dst}"] = st.session_state.get(f"{file_name}_{_src}", 0.0)
 
     # ── Cálculos ────────────────────────────
     df_agg = aggregate_by_date(df, date_choice)
@@ -1221,6 +1222,109 @@ def main():
                     )
                 )
                 st.dataframe(styled_dl, use_container_width=True, hide_index=True)
+
+        # ── Calendário de PnL ───────────────────────────────────────
+        st.divider()
+        import datetime as _dt
+
+        # Constrói mapa {date: pnl}
+        _pnl_by_date: dict[_date_type, float] = {}
+        for _, _row in df_agg.iterrows():
+            try:
+                _d = _dt.datetime.strptime(_row["Data"], "%d/%m/%Y").date()
+                _pnl_by_date[_d] = float(_row["PnL do Dia"])
+            except Exception:
+                pass
+
+        _today = _date_type.today()
+        _cal_month_key = f"{file_name}_cal_month"
+        _cal_year_key  = f"{file_name}_cal_year"
+        _cal_m = st.session_state.get(_cal_month_key, _today.month)
+        _cal_y = st.session_state.get(_cal_year_key,  _today.year)
+
+        _MONTHS_PT = {
+            1: "janeiro", 2: "fevereiro", 3: "março", 4: "abril",
+            5: "maio", 6: "junho", 7: "julho", 8: "agosto",
+            9: "setembro", 10: "outubro", 11: "novembro", 12: "dezembro",
+        }
+        _DAYS_HDR = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"]
+
+        with st.expander("📅 Calendário", expanded=True):
+            _nav_l, _nav_title, _nav_r = st.columns([1, 6, 1])
+            with _nav_l:
+                if st.button("◀", key=f"{file_name}_cal_prev"):
+                    if _cal_m == 1:
+                        st.session_state[_cal_month_key] = 12
+                        st.session_state[_cal_year_key]  = _cal_y - 1
+                    else:
+                        st.session_state[_cal_month_key] = _cal_m - 1
+                    st.rerun()
+            with _nav_title:
+                st.markdown(
+                    f"<div style='text-align:center; font-size:17px; font-weight:700; "
+                    f"color:white; padding-top:6px;'>{_MONTHS_PT[_cal_m]} {_cal_y}</div>",
+                    unsafe_allow_html=True,
+                )
+            with _nav_r:
+                if st.button("▶", key=f"{file_name}_cal_next"):
+                    if _cal_m == 12:
+                        st.session_state[_cal_month_key] = 1
+                        st.session_state[_cal_year_key]  = _cal_y + 1
+                    else:
+                        st.session_state[_cal_month_key] = _cal_m + 1
+                    st.rerun()
+
+            # Calendar(firstweekday=6) → semanas já começam no domingo
+            _weeks = _cal_module.Calendar(firstweekday=6).monthdayscalendar(_cal_y, _cal_m)
+
+            _html_rows = ""
+            for _week in _weeks:
+                _cells = ""
+                for _day in _week:
+                    if _day == 0:
+                        _cells += (
+                            "<td style='background:#0d1117; border-radius:10px; "
+                            "height:80px; padding:10px; vertical-align:top;'></td>"
+                        )
+                    else:
+                        _d2 = _date_type(_cal_y, _cal_m, _day)
+                        _pnl = _pnl_by_date.get(_d2)
+                        _today_border = (
+                            "border:2px solid #3498db;"
+                            if _d2 == _today
+                            else "border:1px solid #1e2230;"
+                        )
+                        if _pnl is not None:
+                            _col = "#27ae60" if _pnl >= 0 else "#e74c3c"
+                            _sign = "" if _pnl >= 0 else "-"
+                            _pnl_cell = (
+                                f"<div style='color:{_col}; font-size:13px; font-weight:700; "
+                                f"text-align:right; margin-top:6px;'>"
+                                f"{_sign}${abs(_pnl):,.2f}</div>"
+                            )
+                        else:
+                            _pnl_cell = ""
+                        _cells += (
+                            f"<td style='background:#151820; border-radius:10px; "
+                            f"height:80px; padding:10px; {_today_border} vertical-align:top;'>"
+                            f"<div style='color:#888; font-size:12px;'>{_day}</div>"
+                            f"{_pnl_cell}</td>"
+                        )
+                _html_rows += f"<tr>{_cells}</tr>"
+
+            _hdr_cells = "".join(
+                f"<th style='color:#3498db; font-size:13px; font-weight:600; "
+                f"text-align:center; padding:8px 0;'>{_h}</th>"
+                for _h in _DAYS_HDR
+            )
+
+            st.markdown(
+                f"<table style='width:100%; border-collapse:separate; border-spacing:4px; table-layout:fixed;'>"
+                f"<tr>{_hdr_cells}</tr>"
+                f"{_html_rows}"
+                f"</table>",
+                unsafe_allow_html=True,
+            )
 
         # ── Resultado Consolidado por Data (Dashboard) ──────────────
         st.divider()
