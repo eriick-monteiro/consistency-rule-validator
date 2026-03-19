@@ -1134,6 +1134,18 @@ def main():
                 )
                 st.dataframe(styled_dl, use_container_width=True, hide_index=True)
 
+        # ── Resultado Consolidado por Data (Dashboard) ──────────────
+        st.divider()
+        st.subheader("📋 Resultado Consolidado por Data")
+        _display_df = df_display.copy()
+        _display_df["% do Total"] = _display_df["% do Total"].map(lambda x: f"{x:.2f}%")
+        _display_df["Excede Limite"] = _display_df["Excede Limite"].map(
+            lambda x: "🔴 Sim" if x else "✅ Não"
+        )
+        _display_df = _display_df.rename(columns={"Excede Limite": f"Excede {limit_pct:.0f}%?"})
+        _styled = _display_df.style.format({"PnL do Dia": "{:,.2f}"}).map(_color_pnl, subset=["PnL do Dia"])
+        st.dataframe(_styled, use_container_width=True, hide_index=True)
+
     with tab_params:
         # ── Parâmetros principais ───────────────
         st.subheader("⚙️ Parâmetros da Conta")
