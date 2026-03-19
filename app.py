@@ -296,6 +296,27 @@ def _sync_dd_type_from_dash(file_name: str) -> None:
     )
 
 
+def _auto_save_params_dash(file_name: str) -> None:
+    """Callback para inputs do dashboard — sincroniza dash→main e persiste no JSON."""
+    for src, dst in [
+        ("dash_account_k",  "account_k"),
+        ("dash_profit_k",   "profit_k"),
+        ("dash_drawdown_k", "drawdown_k"),
+        ("dash_daily_dd_k", "daily_dd_k"),
+    ]:
+        st.session_state[f"{file_name}_{dst}"] = st.session_state.get(f"{file_name}_{src}", 0.0)
+    _save_settings(
+        file_name,
+        st.session_state.get(f"{file_name}_account_k",  0.0),
+        st.session_state.get(f"{file_name}_drawdown_k", 0.0),
+        st.session_state.get(f"{file_name}_profit_k",   0.0),
+        st.session_state.get(f"{file_name}_daily_dd_k", 0.0),
+        st.session_state.get(f"{file_name}_drawdown_type", "Static"),
+        st.session_state.get(f"{file_name}_limit_pct",  40.0),
+    )
+    st.toast("Configurações salvas!", icon="✅")
+
+
 def _make_file_like(path: Path):
     """Cria um objeto file-like a partir de um arquivo local, compatível com load_data()."""
     data = path.read_bytes()
@@ -814,11 +835,19 @@ def main():
     only_positive     = st.session_state.get(f"{file_name}_only_pos",     False)
     show_above_100    = st.session_state.get(f"{file_name}_above_100",    False)
     date_choice       = st.session_state.get(f"{file_name}_date_choice",  "Opening Date")
-    # inicializa chave do widget de DD type no dashboard (se ainda não existir)
+    # inicializa chaves do dashboard (se ainda não existirem)
     if f"{file_name}_drawdown_type_dash" not in st.session_state:
         st.session_state[f"{file_name}_drawdown_type_dash"] = st.session_state.get(
             f"{file_name}_drawdown_type", "Static"
         )
+    for _src, _dst in [
+        ("account_k",  "dash_account_k"),
+        ("profit_k",   "dash_profit_k"),
+        ("drawdown_k", "dash_drawdown_k"),
+        ("daily_dd_k", "dash_daily_dd_k"),
+    ]:
+        if f"{file_name}_{_dst}" not in st.session_state:
+            st.session_state[f"{file_name}_{_dst}"] = st.session_state.get(f"{file_name}_{_src}", 0.0)
 
     # ── Cálculos ────────────────────────────
     df_agg = aggregate_by_date(df, date_choice)
@@ -862,7 +891,7 @@ def main():
         df_daily_loss = compute_daily_loss_analysis(df, date_choice, account_value, daily_loss_limit)
         soft_breach_dates = df_daily_loss.loc[df_daily_loss["Soft Breach"], "Data"].tolist()
 
-    tab_params, tab_dash = st.tabs(["⚙️ Parâmetros & Resultados", "📊 Dashboard"])
+    tab_params, tab_dash = st.tabs(["⚙️ Consistency Rule", "📊 Dashboard"])
 
     with tab_dash:
         # ── Donuts de Acompanhamento ─────────────
@@ -990,16 +1019,22 @@ def main():
     <div style="color:#888; font-size:13px; margin-bottom:7px;">Status</div>
     <span style="background:{status_color}; color:white; font-size:14px; font-weight:700; padding:4px 14px; border-radius:6px;">{status_text}</span>
   </div>
-  <div style="background:#151820; border-radius:10px; padding:14px 16px;">
-    <div style="color:#888; font-size:13px; margin-bottom:4px;">Tamanho da Conta</div>
-    <div style="color:white; font-size:16px; font-weight:700;">${account_value:,.2f}</div>
-  </div>
-  <div style="background:#151820; border-radius:10px; padding:14px 16px;">
+</div>""",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown("<div style='color:#888; font-size:12px; margin-top:10px; margin-bottom:2px;'>Tamanho da Conta (K)</div>", unsafe_allow_html=True)
+                    st.number_input(
+                        "Tamanho da Conta (K)",
+                        min_value=0.0, step=1.0, format="%.0f",
+                        key=f"{file_name}_dash_account_k",
+                        label_visibility="collapsed",
+                        on_change=_auto_save_params_dash, args=(file_name,),
+                    )
+                    st.markdown(
+                        f"""<div style="background:#151820; border-radius:10px; padding:14px 16px; margin-top:6px;">
     <div style="color:#888; font-size:13px; margin-bottom:4px;">Saldo Atual</div>
     <div style="color:white; font-size:16px; font-weight:700;">${balance:,.2f}</div>
-  </div>
-  <!-- Iniciado em removido temporariamente -->
-</div>""",
+  </div>""",
                         unsafe_allow_html=True,
                     )
                 with info_r:
@@ -1010,8 +1045,8 @@ def main():
     <div style="color:white; font-size:16px; font-weight:700;">{hwm_str}</div>
   </div>
   <div style="background:#151820; border-radius:10px; padding:14px 16px;">
-    <div style="color:#888; font-size:13px; margin-bottom:4px;">Saldo Flutuante</div>
     <div style="color:white; font-size:16px; font-weight:700;">—</div>
+    <div style="color:#888; font-size:13px; margin-bottom:4px;">Saldo Flutuante</div>
   </div>
   <div style="background:#151820; border-radius:10px; padding:14px 16px;">
     <div style="color:#888; font-size:13px; margin-bottom:4px;">Drawdown Máximo</div>
@@ -1019,6 +1054,33 @@ def main():
   </div>
 </div>""",
                         unsafe_allow_html=True,
+                    )
+
+                st.markdown("<div style='margin-top:10px;'></div>", unsafe_allow_html=True)
+                p_col, dd_col, ddd_col = st.columns(3)
+                with p_col:
+                    st.markdown("<div style='color:#888; font-size:12px; margin-bottom:2px;'>🎯 Profit (K)</div>", unsafe_allow_html=True)
+                    st.number_input(
+                        "Profit (K)", min_value=0.0, step=1.0, format="%.2f",
+                        key=f"{file_name}_dash_profit_k",
+                        label_visibility="collapsed",
+                        on_change=_auto_save_params_dash, args=(file_name,),
+                    )
+                with dd_col:
+                    st.markdown("<div style='color:#888; font-size:12px; margin-bottom:2px;'>📉 Drawdown (K)</div>", unsafe_allow_html=True)
+                    st.number_input(
+                        "Drawdown (K)", min_value=0.0, step=1.0, format="%.2f",
+                        key=f"{file_name}_dash_drawdown_k",
+                        label_visibility="collapsed",
+                        on_change=_auto_save_params_dash, args=(file_name,),
+                    )
+                with ddd_col:
+                    st.markdown("<div style='color:#888; font-size:12px; margin-bottom:2px;'>🟠 DD Diário (K)</div>", unsafe_allow_html=True)
+                    st.number_input(
+                        "DD Diário (K)", min_value=0.0, step=1.0, format="%.2f",
+                        key=f"{file_name}_dash_daily_dd_k",
+                        label_visibility="collapsed",
+                        on_change=_auto_save_params_dash, args=(file_name,),
                     )
 
             # ── Linha inferior: stats de negociação ──
@@ -1176,34 +1238,10 @@ def main():
                 key=f"{file_name}_limit_pct",
             )
 
-        col_d, col_e, col_f = st.columns([1, 1, 1])
-        with col_d:
-            max_drawdown_k = st.number_input(
-                "📉 Drawdown máximo (em milhares)",
-                min_value=0.0,
-                step=1.0,
-                format="%.2f",
-                help="Valor abaixo do inicial. Ex: 4 = $4.000 abaixo → linha em $146.000 (conta de $150k)",
-                key=f"{file_name}_drawdown_k",
-            )
-        with col_e:
-            profit_target_k = st.number_input(
-                "🎯 Meta de lucro (em milhares)",
-                min_value=0.0,
-                step=1.0,
-                format="%.2f",
-                help="Valor acima do inicial. Ex: 9 = $9.000 acima → linha em $159.000 (conta de $150k)",
-                key=f"{file_name}_profit_k",
-            )
-        with col_f:
-            daily_drawdown_k = st.number_input(
-                "🟠 Drawdown diário (em milhares)",
-                min_value=0.0,
-                step=1.0,
-                format="%.2f",
-                help="Perda máxima permitida por dia. Ex: 1 = $1.000",
-                key=f"{file_name}_daily_dd_k",
-            )
+        # Drawdown máximo, Meta de lucro e Drawdown diário são configurados na aba Dashboard
+        max_drawdown_k   = st.session_state.get(f"{file_name}_drawdown_k",  0.0)
+        profit_target_k  = st.session_state.get(f"{file_name}_profit_k",    0.0)
+        daily_drawdown_k = st.session_state.get(f"{file_name}_daily_dd_k",  0.0)
 
         if st.button("💾 Salvar configurações", help="Salva Saldo, Drawdown e Profit para esta planilha"):
             _save_settings(
