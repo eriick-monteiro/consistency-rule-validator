@@ -929,9 +929,12 @@ def main():
                 else:
                     current_dd_limit = account_value - _dd_amount
                 dd_max_str = f"${current_dd_limit:,.2f}"
+                _dd_to_fail = max(0.0, balance - current_dd_limit)
+                dd_to_fail_str = f"${_dd_to_fail:,.2f}"
             else:
                 current_dd_limit = None
                 dd_max_str = "—"
+                dd_to_fail_str = ""
 
             # Status: prioridade Aprovado > Failed > Temporary Blocked > Active
             _last_day_pnl = float(df_agg.iloc[-1]["PnL do Dia"]) if len(df_agg) > 0 else 0.0
@@ -1054,7 +1057,10 @@ def main():
   </div>
   <div style="background:#151820; border-radius:10px; padding:14px 16px;">
     <div style="color:#888; font-size:13px; margin-bottom:4px;">Drawdown Máximo</div>
-    <div style="color:white; font-size:16px; font-weight:700;">{dd_max_str}</div>
+    <div style="display:flex; align-items:baseline; gap:8px;">
+      <span style="color:white; font-size:16px; font-weight:700;">{dd_max_str}</span>
+      <span style="color:#f0c300; font-size:13px; font-weight:700;">{dd_to_fail_str}</span>
+    </div>
   </div>
 </div>""",
                         unsafe_allow_html=True,
