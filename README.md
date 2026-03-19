@@ -10,45 +10,97 @@ Aplicação Streamlit para consolidação e análise de consistência de trades 
 - Remoção de planilhas salvas diretamente pelo sidebar
 - Configurações de conta salvas por planilha em JSON, carregadas automaticamente ao trocar de planilha
 
-### Parâmetros de Conta
-- Agrupamento por **Opening Date** ou **Closing Date**
-- Valor inicial da conta em **milhares** (ex.: `25` = $25.000)
-- Limite de consistência percentual configurável (padrão: 40%)
-- **Drawdown máximo** — valor em milhares (linha de referência no gráfico)
-- **Meta de lucro (Profit Target)** — valor em milhares (linha de referência no gráfico)
-- **Daily Drawdown** — limite de perda diária com histórico de violações
-- **Tipo de Drawdown** — Static, EOD (End of Day) ou Trailing até Breakeven
+---
 
-### Tipos de Drawdown
+## Navegação por Abas
+
+A aplicação é dividida em duas abas principais:
+
+### ⚙️ Consistency Rule
+Focada na análise de consistência. Contém:
+- Seleção de coluna de data e configuração do valor inicial da conta
+- Limite de consistência percentual (padrão: 40%)
+- Métricas no topo, toggles de visualização
+- Tabela consolidada por dia com violações destacadas
+- Plano de recuperação (quando a regra está violada)
+- Histórico de Daily Loss (quando configurado)
+
+### 📊 Dashboard
+Visão operacional da conta. Contém:
+- **Painel de configuração** — permite editar diretamente Tamanho da Conta, Profit Target, Drawdown Máximo e Drawdown Diário; salva automaticamente ao alterar
+- **Gráficos Donut** — exibem o progresso em % para Profit, Drawdown e Daily Drawdown (apenas quando configurados > 0)
+- **Painel de status** — Status, HWM, Saldo Atual, Saldo Flutuante, Drawdown Máximo calculado pelo modo ativo
+- **Tipo de Drawdown** — seletor Static / EOD / Trailing visível ao lado do toggle "Por trade"
+- **Estatísticas de negociação** — Melhor/Pior Negociação, Média Lucro/Perda, Negociações, Taxa de Vitória, Fator de Lucro
+- **Gráfico de Acompanhamento de Saldo** — com linhas de referência dinâmicas
+- **Resultado Consolidado por Data** — mesma tabela da aba Consistency Rule
+
+---
+
+## Parâmetros de Conta
+
+| Parâmetro | Onde configurar | Descrição |
+|---|---|---|
+| Valor inicial da conta (K) | Ambas as abas | Ex.: `25` = $25.000 |
+| Limite de consistência (%) | ⚙️ Consistency Rule | Padrão 40% |
+| Profit Target (K) | 📊 Dashboard | Meta de lucro acima do saldo inicial |
+| Drawdown Máximo (K) | 📊 Dashboard | Perda máxima tolerada |
+| Drawdown Diário (K) | 📊 Dashboard | Limite de perda por dia |
+| Tipo de Drawdown | ⚙️ Consistency Rule | Static, EOD ou Trailing |
+
+---
+
+## Tipos de Drawdown
+
 | Tipo | Comportamento |
 |---|---|
 | Static | Limite fixo abaixo do saldo inicial durante toda a conta |
 | EOD | Limite recalculado ao fim de cada dia com base no saldo de fechamento |
 | Trailing | Limite acompanha o pico histórico (HWM), travando no saldo inicial ao atingir breakeven |
 
-### Métricas no Topo
+### HWM e Drawdown Máximo nos Donuts
+- **HWM** (High Water Mark): calculado per-trade em ordem cronológica — maior saldo já atingido em qualquer momento
+- **Drawdown Máximo** exibido no painel: reflete o limite efetivo do modo ativo
+  - Trailing → `min(HWM − dd_amount, saldo_inicial)`
+  - EOD → `saldo_EOD_anterior − dd_amount`
+  - Static → `saldo_inicial − dd_amount`
+
+---
+
+## Status da Conta
+
+| Status | Cor | Condição |
+|---|---|---|
+| Aprovado | 🟢 Verde | Saldo ≥ Profit Target |
+| Failed | 🔴 Vermelho | Saldo ≤ limite de drawdown efetivo |
+| Temporary Blocked | 🟠 Laranja | Drawdown diário atingido no último dia |
+| Active | 🟢 Verde | Nenhuma das condições acima |
+
+---
+
+## Métricas no Topo (aba Consistency Rule)
+
 | Métrica | Descrição |
 |---|---|
 | Total de Trades | Número de operações no arquivo |
 | Dias com Operação | Dias únicos após consolidação |
 | Consistência Atual | % do maior dia em relação ao total (delta vs limite) |
 | PnL Total Geral | Soma do PnL; delta mostra o valor equivalente ao limite % |
-| Saldo da Conta | Valor inicial + PnL total real (todos os dias, positivos e negativos) |
+| Saldo da Conta | Valor inicial + PnL total real |
 | Dias que Excedem o Limite | Contagem de violações da regra de consistência |
 | Dias acima de $100 | Dias com PnL consolidado > $100 |
 | Regra de Consistência | ✅ Dentro / 🔴 Violada |
 
-### Gráfico de Saldo
-- Linha que **muda de cor** (verde/vermelho) ao cruzar o saldo inicial
-- Linhas de referência para Initial Balance, Max Drawdown, Profit Target e limite de Drawdown
-- Reflete fielmente todos os trades (lucros e perdas) em ordem cronológica
+---
 
-### Toggles
+## Toggles
+
 | Toggle | Comportamento |
 |---|---|
 | Incluir dias negativos na regra de % | Considera dias negativos no cálculo do percentual |
 | Exibir apenas dias positivos | Filtra tabela e recalcula usando só dias positivos |
 | Destacar dias acima de $100 | Exibe seção separada com esses dias |
+| Por trade | Exibe gráfico de saldo por operação (em vez de por dia) |
 
 ---
 
@@ -126,12 +178,11 @@ A aplicação abrirá em `http://localhost:8501`.
 
 1. Faça login com as credenciais configuradas
 2. Selecione **"⬆️ Novo upload"** no sidebar e envie seu arquivo `.csv` ou `.xlsx`
-3. Escolha a coluna de data para agregação (**Opening** ou **Closing Date**)
-4. Configure os **⚙️ Parâmetros da Conta**: saldo inicial, limite de consistência, drawdown, profit target e tipo de drawdown
-5. Clique em **💾 Salvar configurações** para persistir os valores por planilha
-6. Analise as métricas, a tabela consolidada e o gráfico de saldo
-7. Caso a regra esteja violada, consulte o **Plano de Recuperação** para ver o caminho dia a dia
-8. Use o botão **🚪 Sair** no sidebar para encerrar a sessão
+3. Na aba **📊 Dashboard**: configure Tamanho da Conta, Profit, Drawdown e DD Diário — salva automaticamente
+4. Na aba **⚙️ Consistency Rule**: ajuste a coluna de data, limite de consistência e tipo de drawdown
+5. Clique em **💾 Salvar configurações** para persistir limite % e tipo de drawdown
+6. Analise métricas, tabela consolidada e gráficos
+7. Use o botão **🚪 Sair** no sidebar para encerrar a sessão
 
 ---
 
