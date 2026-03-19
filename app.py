@@ -1037,10 +1037,21 @@ def main():
                         label_visibility="collapsed",
                         on_change=_auto_save_params_dash, args=(file_name,),
                     )
+                    _profit_remaining = (
+                        max(0.0, account_value + profit_target_k * 1_000 - balance)
+                        if profit_target_k > 0 else None
+                    )
+                    _profit_remaining_html = (
+                        f'<span style="color:#27ae60; font-size:13px; font-weight:700;">${_profit_remaining:,.2f}</span>'
+                        if _profit_remaining is not None else ""
+                    )
                     st.markdown(
                         f"""<div style="background:#151820; border-radius:10px; padding:14px 16px; margin-top:6px;">
     <div style="color:#888; font-size:13px; margin-bottom:4px;">Saldo Atual</div>
-    <div style="color:white; font-size:16px; font-weight:700;">${balance:,.2f}</div>
+    <div style="display:flex; align-items:baseline; gap:8px;">
+      <span style="color:white; font-size:16px; font-weight:700;">${balance:,.2f}</span>
+      {_profit_remaining_html}
+    </div>
   </div>""",
                         unsafe_allow_html=True,
                     )
