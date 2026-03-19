@@ -1047,18 +1047,20 @@ def main():
                         max(0.0, account_value + profit_target_k * 1_000 - balance)
                         if profit_target_k > 0 else None
                     )
-                    _profit_remaining_html = (
-                        f'<span style="color:#27ae60; font-size:13px; font-weight:700;">${_profit_remaining:,.2f}</span>'
-                        if _profit_remaining is not None else ""
-                    )
+                    if _profit_remaining is not None:
+                        _saldo_value_html = (
+                            f'<div style="display:flex; align-items:baseline; gap:8px;">'
+                            f'<span style="color:white; font-size:16px; font-weight:700;">${balance:,.2f}</span>'
+                            f'<span style="color:#27ae60; font-size:13px; font-weight:700;">${_profit_remaining:,.2f}</span>'
+                            f'</div>'
+                        )
+                    else:
+                        _saldo_value_html = f'<div style="color:white; font-size:16px; font-weight:700;">${balance:,.2f}</div>'
                     st.markdown(
-                        f"""<div style="background:#151820; border-radius:10px; padding:14px 16px; margin-top:6px;">
-    <div style="color:#888; font-size:13px; margin-bottom:4px;">Saldo Atual</div>
-    <div style="display:flex; align-items:baseline; gap:8px;">
-      <span style="color:white; font-size:16px; font-weight:700;">${balance:,.2f}</span>
-      {_profit_remaining_html}
-    </div>
-  </div>""",
+                        f'<div style="background:#151820; border-radius:10px; padding:14px 16px; margin-top:6px;">'
+                        f'<div style="color:#888; font-size:13px; margin-bottom:4px;">Saldo Atual</div>'
+                        f'{_saldo_value_html}'
+                        f'</div>',
                         unsafe_allow_html=True,
                     )
                 with info_r:
@@ -1074,10 +1076,7 @@ def main():
   </div>
   <div style="background:#151820; border-radius:10px; padding:14px 16px;">
     <div style="color:#888; font-size:13px; margin-bottom:4px;">Drawdown Máximo</div>
-    <div style="display:flex; align-items:baseline; gap:8px;">
-      <span style="color:white; font-size:16px; font-weight:700;">{dd_max_str}</span>
-      <span style="color:#f0c300; font-size:13px; font-weight:700;">{dd_to_fail_str}</span>
-    </div>
+    <div style="color:white; font-size:16px; font-weight:700;">{dd_max_str}{"&nbsp;&nbsp;<span style='color:#f0c300; font-size:13px; font-weight:700;'>" + dd_to_fail_str + "</span>" if dd_to_fail_str else ""}</div>
   </div>
 </div>""",
                         unsafe_allow_html=True,
