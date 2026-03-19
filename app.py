@@ -835,6 +835,7 @@ def main():
     only_positive     = st.session_state.get(f"{file_name}_only_pos",     False)
     show_above_100    = st.session_state.get(f"{file_name}_above_100",    False)
     date_choice       = st.session_state.get(f"{file_name}_date_choice",  "Opening Date")
+    filter_date       = st.session_state.get(f"{file_name}_filter_date",  None)
     # inicializa chaves do dashboard (se ainda não existirem)
     if f"{file_name}_drawdown_type_dash" not in st.session_state:
         st.session_state[f"{file_name}_drawdown_type_dash"] = st.session_state.get(
@@ -852,8 +853,13 @@ def main():
     # ── Cálculos ────────────────────────────
     df_agg = aggregate_by_date(df, date_choice)
 
+    # Filtro de data para análise de consistência (não afeta saldo nem HWM)
+    _df_agg_consistency = (
+        df_agg[pd.to_datetime(df_agg["Data"], dayfirst=True).dt.date >= filter_date].copy()
+        if filter_date is not None else df_agg
+    )
     # Quando only_positive está ativo, o cálculo do total e dos % usa apenas dias positivos
-    df_agg_calc = df_agg[df_agg["PnL do Dia"] > 0].copy() if only_positive else df_agg
+    df_agg_calc = _df_agg_consistency[_df_agg_consistency["PnL do Dia"] > 0].copy() if only_positive else _df_agg_consistency
     df_result, total_pnl = compute_consistency(df_agg_calc, limit_pct, include_negatives)
 
     df_display = df_result.copy()
@@ -1348,6 +1354,14 @@ def main():
         # ── Tabela consolidada ──────────────────
         st.divider()
         st.subheader("📋 Resultado Consolidado por Data")
+        _date_col, _ = st.columns([1, 3])
+        with _date_col:
+            st.date_input(
+                "Analisar a partir de:",
+                value=None,
+                key=f"{file_name}_filter_date",
+                help="Deixe vazio para usar todo o período.",
+            )
         display_df = df_display.copy()
         display_df["% do Total"] = display_df["% do Total"].map(lambda x: f"{x:.2f}%")
         display_df["Excede Limite"] = display_df["Excede Limite"].map(
