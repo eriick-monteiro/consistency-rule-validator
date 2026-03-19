@@ -899,7 +899,7 @@ def main():
         show_dd_donut = max_drawdown_k > 0 and account_value > 0
         show_daily_donut = daily_drawdown_k > 0 and account_value > 0
 
-        if show_profit_donut or show_dd_donut or show_daily_donut:
+        if account_value > 0:
             # ── Cálculos de stats ─────────────────
             wins = df[df["Trade PnL"] > 0]["Trade PnL"]
             losses = df[df["Trade PnL"] < 0]["Trade PnL"]
@@ -913,7 +913,6 @@ def main():
             pf_str = f"{profit_factor:.2f}" if profit_factor != float("inf") else "∞"
 
             dd_type_label = st.session_state.get(f"{file_name}_drawdown_type", "Static")
-            # first_date = df["Opening Date"].min().strftime("%d/%m/%Y") if len(df) > 0 else "—"
             hwm_str = f"${hwm_balance:,.2f}" if hwm_balance is not None else "—"
 
             # ── Limite efetivo de drawdown (varia por modo) ──────────────────
@@ -922,7 +921,7 @@ def main():
                 account_value + df_agg["PnL do Dia"].iloc[:-1].sum()
                 if len(df_agg) > 1 else account_value
             )
-            if max_drawdown_k > 0 and account_value > 0:
+            if max_drawdown_k > 0:
                 if dd_type_label == "Trailing" and hwm_balance is not None:
                     current_dd_limit = min(hwm_balance - _dd_amount, account_value)
                 elif dd_type_label == "EOD":
@@ -949,7 +948,12 @@ def main():
 
             # ── Linha superior: donuts + painel da conta ──
             n_donuts = sum([show_profit_donut, show_dd_donut, show_daily_donut])
-            top_cols = st.columns([3] * n_donuts + [3])
+            if n_donuts > 0:
+                top_cols = st.columns([3] * n_donuts + [3])
+                panel_container = top_cols[n_donuts]
+            else:
+                top_cols = []
+                panel_container = st.columns([1, 2, 1])[1]  # painel centralizado
             col_idx = 0
 
             if show_profit_donut:
@@ -1010,7 +1014,7 @@ def main():
                 col_idx += 1
 
             # ── Painel da conta (coluna direita) ──
-            with top_cols[col_idx]:
+            with panel_container:
                 info_l, info_r = st.columns(2)
                 with info_l:
                     st.markdown(
