@@ -352,20 +352,28 @@ def _compute_drawdown_series(
         return result
 
     if dd_type == "EOD" and trade_dates is not None:
-        # Por trade: limite atualiza na virada de dia (usa saldo EOD do dia anterior)
-        current_limit = balances[0] - dd_amount
+        # Por trade: limite atualiza na virada de dia usando o pico EOD acumulado
+        # (nunca cai — se o dia fechar abaixo do pico anterior, o limite não regride)
+        peak_eod = balances[0]
+        current_limit = peak_eod - dd_amount
         current_day = trade_dates[0].date() if trade_dates else None
         result = [current_limit]
         for i, d in enumerate(trade_dates):
             if d.date() != current_day:
-                current_limit = balances[i] - dd_amount  # saldo ao final do dia anterior
+                peak_eod = max(peak_eod, balances[i])  # pico EOD acumulado
+                current_limit = peak_eod - dd_amount
                 current_day = d.date()
             result.append(current_limit)
         return result
 
     if dd_type == "EOD":
-        # Por dia: cada ponto já é EOD → limite = saldo_EOD - dd_amount
-        return [b - dd_amount for b in balances]
+        # Por dia: limite = pico EOD acumulado - dd_amount (nunca cai)
+        result = []
+        peak_eod = balances[0]
+        for b in balances:
+            peak_eod = max(peak_eod, b)
+            result.append(peak_eod - dd_amount)
+        return result
 
     # Static (default): limite fixo com base no saldo inicial
     return [balances[0] - dd_amount] * len(balances)
