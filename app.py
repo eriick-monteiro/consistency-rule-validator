@@ -906,7 +906,7 @@ def main():
         df_daily_loss = compute_daily_loss_analysis(df, date_choice, account_value, daily_loss_limit)
         soft_breach_dates = df_daily_loss.loc[df_daily_loss["Soft Breach"], "Data"].tolist()
 
-    tab_params, tab_dash = st.tabs(["⚙️ Consistency Rule", "📊 Dashboard"])
+    tab_params, tab_dash, tab_compare = st.tabs(["⚙️ Consistency Rule", "📊 Dashboard", "🔍 Comparação"])
 
     with tab_dash:
         # ── Donuts de Acompanhamento ─────────────
@@ -1544,6 +1544,216 @@ def main():
             st.dataframe(styled_viol, use_container_width=True, hide_index=True)
         else:
             st.success(f"Nenhum dia excedeu o limite de {limit_pct:.0f}% do total.")
+
+    # ── Aba de Comparação ────────────────────────────────────────────────────
+    with tab_compare:
+        st.subheader("🔍 Comparação de Resultados")
+
+        cmp_file = st.file_uploader(
+            "Envie o arquivo de comparação (.csv)",
+            type=["csv"],
+            key=f"{file_name}_cmp_upload",
+        )
+
+        if cmp_file is None:
+            st.info("Envie um arquivo CSV com as colunas `data_referencia` e `pnl_dia` para iniciar a comparação.")
+        else:
+            try:
+                df_cmp = pd.read_csv(cmp_file)
+
+                # Detecta e normaliza coluna de data
+                _date_col = next(
+                    (c for c in df_cmp.columns if "data" in c.lower() or "date" in c.lower()),
+                    None,
+                )
+                _pnl_col = next(
+                    (c for c in df_cmp.columns if "pnl" in c.lower()),
+                    None,
+                )
+
+                if _date_col is None or _pnl_col is None:
+                    st.error(
+                        f"Colunas esperadas não encontradas. Detectadas: {list(df_cmp.columns)}. "
+                        "O arquivo precisa ter uma coluna de data e uma de PnL."
+                    )
+                else:
+                    # ── Tratamento de dados ──────────────────────────────
+                    def _parse_pnl(val) -> float:
+                        """Converte string de PnL para float detectando separadores."""
+                        import re as _re
+                        s = str(val).strip()
+                        if not s or s in ("-", ""):
+                            return 0.0
+                        try:
+                            return float(s)
+                        except ValueError:
+                            pass
+                        n_comma = s.count(",")
+                        n_dot   = s.count(".")
+                        if n_comma > 0 and n_dot > 0:
+                            # ambos presentes: o último é o decimal
+                            if s.rfind(".") > s.rfind(","):
+                                s = s.replace(",", "")          # 1,234.56
+                            else:
+                                s = s.replace(".", "").replace(",", ".")  # 1.234,56
+                        elif n_comma == 1:
+                            after = s.split(",")[-1].lstrip("-")
+                            if len(after) == 3 and after.isdigit():
+                                s = s.replace(",", "")          # 1,000
+                            else:
+                                s = s.replace(",", ".")         # 418,5
+                        elif n_comma > 1:
+                            s = s.replace(",", "")              # 1,234,567
+                        s = _re.sub(r"[^\d.\-]", "", s)
+                        try:
+                            return float(s)
+                        except ValueError:
+                            return float("nan")
+
+                    df_cmp[_pnl_col] = df_cmp[_pnl_col].apply(_parse_pnl)
+
+                    # Normaliza data para date (sem horário)
+                    df_cmp["_date"] = pd.to_datetime(
+                        df_cmp[_date_col], dayfirst=False, errors="coerce"
+                    ).dt.date
+                    df_cmp = df_cmp.dropna(subset=["_date"])
+
+                    # Agrupa por data (caso haja duplicatas)
+                    df_cmp_agg = (
+                        df_cmp.groupby("_date")[_pnl_col]
+                        .sum()
+                        .reset_index()
+                        .rename(columns={"_date": "_date", _pnl_col: "PnL Comparação"})
+                    )
+
+                    # Normaliza df_agg (Data está como string dd/mm/yyyy)
+                    df_base = df_agg.copy()
+                    df_base["_date"] = pd.to_datetime(df_base["Data"], dayfirst=True).dt.date
+                    df_base = df_base.rename(columns={"PnL do Dia": "PnL Base"})[["_date", "PnL Base"]]
+
+                    # Merge full outer
+                    df_merged = pd.merge(
+                        df_base,
+                        df_cmp_agg,
+                        on="_date",
+                        how="outer",
+                    ).sort_values("_date").reset_index(drop=True)
+
+                    df_merged["Data"] = df_merged["_date"].apply(lambda d: d.strftime("%d/%m/%Y"))
+                    df_merged = df_merged.drop(columns=["_date"])
+                    df_merged["PnL Base"] = pd.to_numeric(df_merged["PnL Base"], errors="coerce")
+                    df_merged["PnL Comparação"] = pd.to_numeric(df_merged["PnL Comparação"], errors="coerce")
+                    df_merged["Diferença"] = df_merged["PnL Base"].fillna(0) - df_merged["PnL Comparação"].fillna(0)
+
+                    # ── Totais ──────────────────────────────────────────
+                    total_base = float(df_merged["PnL Base"].sum())
+                    total_cmp  = float(df_merged["PnL Comparação"].sum())
+                    total_diff = total_base - total_cmp
+
+                    # Dias que existem só de um lado (outer join)
+                    only_base = df_merged["PnL Comparação"].isna().sum()
+                    only_cmp  = df_merged["PnL Base"].isna().sum()
+                    n_diff_val = (df_merged["Diferença"].abs() >= 0.01).sum()
+
+                    dias_ok  = (only_base == 0) and (only_cmp == 0) and (n_diff_val == 0)
+                    total_ok = abs(total_diff) < 0.01
+
+                    # ── Somas separadas ─────────────────────────────────
+                    s_col1, s_col2, s_col3 = st.columns(3)
+                    with s_col1:
+                        st.markdown(
+                            f'<div style="background:#151820; border-radius:10px; padding:14px 18px;">'
+                            f'<div style="color:#888; font-size:12px; margin-bottom:4px;">Soma — Base (carregada)</div>'
+                            f'<div style="color:#3498db; font-size:22px; font-weight:700;">${total_base:,.2f}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                    with s_col2:
+                        st.markdown(
+                            f'<div style="background:#151820; border-radius:10px; padding:14px 18px;">'
+                            f'<div style="color:#888; font-size:12px; margin-bottom:4px;">Soma — Comparação (CSV enviado)</div>'
+                            f'<div style="color:#9b59b6; font-size:22px; font-weight:700;">${total_cmp:,.2f}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                    with s_col3:
+                        _diff_color = "#27ae60" if total_ok else "#e74c3c"
+                        st.markdown(
+                            f'<div style="background:#151820; border-radius:10px; padding:14px 18px;">'
+                            f'<div style="color:#888; font-size:12px; margin-bottom:4px;">Diferença</div>'
+                            f'<div style="color:{_diff_color}; font-size:22px; font-weight:700;">${total_diff:,.2f}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    st.markdown("<div style='margin-top:14px;'></div>", unsafe_allow_html=True)
+
+                    # ── Checklist ───────────────────────────────────────
+                    def _check(ok: bool, label: str) -> str:
+                        icon  = "✅" if ok else "❌"
+                        color = "#27ae60" if ok else "#e74c3c"
+                        return (
+                            f'<div style="display:flex; align-items:center; gap:10px; '
+                            f'padding:10px 16px; background:#151820; border-radius:8px; margin-bottom:8px;">'
+                            f'<span style="font-size:18px;">{icon}</span>'
+                            f'<span style="color:{color}; font-size:14px; font-weight:600;">{label}</span>'
+                            f'</div>'
+                        )
+
+                    _detail_dias = "" if dias_ok else (
+                        f" &nbsp;<span style='color:#888; font-size:12px;'>"
+                        f"({n_diff_val} dia(s) divergente(s)"
+                        + (f", {only_base} só na base" if only_base else "")
+                        + (f", {only_cmp} só na comparação" if only_cmp else "")
+                        + ")</span>"
+                    )
+                    _detail_total = "" if total_ok else (
+                        f" &nbsp;<span style='color:#888; font-size:12px;'>diferença: ${total_diff:,.2f}</span>"
+                    )
+
+                    st.markdown(
+                        _check(dias_ok,  f"Dias batem{_detail_dias}")
+                        + _check(total_ok, f"Soma total bate{_detail_total}"),
+                        unsafe_allow_html=True,
+                    )
+
+                    st.markdown("---")
+
+                    # ── Tabela detalhada ────────────────────────────────
+                    def _style_cmp_row(row):
+                        if pd.isna(row.get("PnL Base")):
+                            bg = "background-color: #1a1030"
+                        elif pd.isna(row.get("PnL Comparação")):
+                            bg = "background-color: #101a30"
+                        elif abs(row.get("Diferença", 0)) < 0.01:
+                            bg = ""
+                        else:
+                            bg = "background-color: #2a1515"
+                        return [bg] * len(row)
+
+                    def _color_diff(val):
+                        if pd.isna(val):
+                            return "color: #555"
+                        if abs(val) < 0.01:
+                            return "color: #27ae60"
+                        return "color: #e74c3c"
+
+                    styled_cmp = (
+                        df_merged[["Data", "PnL Base", "PnL Comparação", "Diferença"]]
+                        .style
+                        .format({
+                            "PnL Base":       lambda v: f"${v:,.2f}" if pd.notna(v) else "—",
+                            "PnL Comparação": lambda v: f"${v:,.2f}" if pd.notna(v) else "—",
+                            "Diferença":      lambda v: f"${v:,.2f}" if pd.notna(v) else "—",
+                        })
+                        .apply(_style_cmp_row, axis=1)
+                        .map(_color_diff, subset=["Diferença"])
+                    )
+
+                    st.dataframe(styled_cmp, use_container_width=True, hide_index=True)
+
+            except Exception as _exc:
+                st.error(f"Erro ao processar o arquivo: {_exc}")
 
 
 if __name__ == "__main__":
