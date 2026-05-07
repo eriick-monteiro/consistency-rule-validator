@@ -1752,6 +1752,135 @@ def main():
 
                     st.dataframe(styled_cmp, use_container_width=True, hide_index=True)
 
+                    # ── Validação da Regra de Consistência com dados da Comparação ──
+                    st.markdown("---")
+                    st.subheader("📐 Regra de Consistência — Dados da Comparação")
+
+                    df_cmp_consistency = (
+                        df_merged[["Data", "PnL Comparação"]]
+                        .dropna(subset=["PnL Comparação"])
+                        .rename(columns={"PnL Comparação": "PnL do Dia"})
+                        .reset_index(drop=True)
+                    )
+
+                    if len(df_cmp_consistency) == 0:
+                        st.warning("Sem dados da planilha de comparação para validar a regra.")
+                    else:
+                        df_cmp_calc = (
+                            df_cmp_consistency[df_cmp_consistency["PnL do Dia"] > 0].copy()
+                            if only_positive else df_cmp_consistency
+                        )
+                        df_cmp_result, _total_cmp = compute_consistency(
+                            df_cmp_calc, limit_pct, include_negatives
+                        )
+                        cmp_violations = int(df_cmp_result["Excede Limite"].sum())
+                        cmp_consistency_ok = cmp_violations == 0
+
+                        if include_negatives:
+                            cmp_max_pct = float(df_cmp_result["% do Total"].abs().max())
+                        else:
+                            _cmp_pos = df_cmp_result[df_cmp_result["PnL do Dia"] > 0]
+                            cmp_max_pct = float(_cmp_pos["% do Total"].max()) if len(_cmp_pos) > 0 else 0.0
+
+                        _s_color = "#27ae60" if cmp_consistency_ok else "#e74c3c"
+                        _s_label = "✅ Dentro da regra" if cmp_consistency_ok else "🔴 Regra violada"
+                        _p_color = "#e74c3c" if cmp_max_pct > limit_pct else "#27ae60"
+                        _v_color = "#e74c3c" if cmp_violations > 0 else "#27ae60"
+
+                        cr1, cr2, cr3 = st.columns(3)
+                        with cr1:
+                            st.markdown(
+                                f'<div style="background:#151820; border-radius:10px; padding:14px 18px;">'
+                                f'<div style="color:#888; font-size:12px; margin-bottom:4px;">Regra de Consistência</div>'
+                                f'<div style="color:{_s_color}; font-size:20px; font-weight:700;">{_s_label}</div>'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
+                        with cr2:
+                            st.markdown(
+                                f'<div style="background:#151820; border-radius:10px; padding:14px 18px;">'
+                                f'<div style="color:#888; font-size:12px; margin-bottom:4px;">Consistência Atual (maior dia)</div>'
+                                f'<div style="color:{_p_color}; font-size:20px; font-weight:700;">{cmp_max_pct:.2f}% / {limit_pct:.0f}%</div>'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
+                        with cr3:
+                            st.markdown(
+                                f'<div style="background:#151820; border-radius:10px; padding:14px 18px;">'
+                                f'<div style="color:#888; font-size:12px; margin-bottom:4px;">Dias que Excedem {limit_pct:.0f}%</div>'
+                                f'<div style="color:{_v_color}; font-size:20px; font-weight:700;">{cmp_violations} dia(s)</div>'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
+
+                        st.markdown("<div style='margin-top:14px;'></div>", unsafe_allow_html=True)
+
+                        df_cmp_display = df_cmp_result.copy()
+                        df_cmp_display["% do Total"] = df_cmp_display["% do Total"].map(
+                            lambda x: f"{x:.2f}%"
+                        )
+                        df_cmp_display["Excede Limite"] = df_cmp_display["Excede Limite"].map(
+                            lambda x: "🔴 Sim" if x else "✅ Não"
+                        )
+                        df_cmp_display = df_cmp_display.rename(
+                            columns={"Excede Limite": f"Excede {limit_pct:.0f}%?"}
+                        )
+                        styled_cmp_cons = (
+                            df_cmp_display.style
+                            .format({"PnL do Dia": "{:,.2f}"})
+                            .map(_color_pnl, subset=["PnL do Dia"])
+                        )
+                        st.dataframe(styled_cmp_cons, use_container_width=True, hide_index=True)
+
+                        if not cmp_consistency_ok:
+                            cmp_violating = df_cmp_result[df_cmp_result["Excede Limite"]]
+                            cmp_v_max = cmp_violating["PnL do Dia"].max()
+                            cmp_required_total = cmp_v_max * 100 / limit_pct
+                            cmp_additional_needed = cmp_required_total - _total_cmp
+                            p = limit_pct / 100
+
+                            if _total_cmp > 0:
+                                cmp_days_needed = int(np.ceil(
+                                    np.log(cmp_required_total / _total_cmp) / np.log(1 + p)
+                                ))
+                            else:
+                                cmp_days_needed = int(np.ceil(
+                                    cmp_additional_needed / (cmp_required_total * p)
+                                ))
+
+                            st.warning(
+                                f"**Para entrar na regra de consistência você precisa de:**\n\n"
+                                f"- **PnL adicional necessário:** ${cmp_additional_needed:,.2f} "
+                                f"(atual: ${_total_cmp:,.2f} → necessário: ${cmp_required_total:,.2f})\n"
+                                f"- **Dias mínimos:** {cmp_days_needed} dia(s) com ganho máximo de "
+                                f"**{limit_pct:.0f}% do total acumulado no dia anterior**"
+                            )
+
+                            cmp_running = _total_cmp
+                            cmp_plan_rows = []
+                            for d in range(1, cmp_days_needed + 1):
+                                max_day_pnl = cmp_running * p
+                                cmp_running += max_day_pnl
+                                cmp_plan_rows.append({
+                                    "Dia": d,
+                                    f"PnL máx. do dia ({limit_pct:.0f}% do total anterior)": max_day_pnl,
+                                    "Total acumulado após o dia": cmp_running,
+                                    "Regra OK?": "✅ Sim" if cmp_running >= cmp_required_total else "⏳ Não ainda",
+                                })
+                            df_cmp_plan = pd.DataFrame(cmp_plan_rows)
+                            styled_cmp_plan = (
+                                df_cmp_plan.style
+                                .format({
+                                    f"PnL máx. do dia ({limit_pct:.0f}% do total anterior)": "${:,.2f}",
+                                    "Total acumulado após o dia": "${:,.2f}",
+                                })
+                                .map(
+                                    lambda v: "color: #27ae60" if v == "✅ Sim" else ("color: #f0a500" if v == "⏳ Não ainda" else ""),
+                                    subset=["Regra OK?"],
+                                )
+                            )
+                            st.dataframe(styled_cmp_plan, use_container_width=True, hide_index=True)
+
             except Exception as _exc:
                 st.error(f"Erro ao processar o arquivo: {_exc}")
 
