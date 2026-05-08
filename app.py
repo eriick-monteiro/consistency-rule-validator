@@ -142,13 +142,14 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
 # 3. CÁLCULOS
 # ─────────────────────────────────────────────
 
-def aggregate_by_date(df: pd.DataFrame, date_column: str) -> pd.DataFrame:
+def aggregate_by_date(df: pd.DataFrame, date_column: str, utc_mode: bool = False) -> pd.DataFrame:
     """Agrupa por data escolhida (sem horário) e soma o Trade PnL do dia."""
     df = df.copy()
 
-    # Remove a parte de horário para que todas as linhas do
-    # mesmo dia sejam agrupadas juntas
     df["_date"] = df[date_column].dt.normalize()
+    # Trades com horário >= 21h passam para o dia seguinte (limite UTC+3)
+    if utc_mode:
+        df.loc[df[date_column].dt.hour >= 21, "_date"] += pd.Timedelta(days=1)
     grouped = (
         df.groupby("_date")["Trade PnL"]
         .sum()
@@ -190,6 +191,7 @@ def compute_daily_loss_analysis(
     date_col: str,
     initial_balance: float,
     daily_loss_limit: float,
+    utc_mode: bool = False,
 ) -> pd.DataFrame:
     """Para cada dia de trading calcula a perda intraday máxima e detecta Soft Breach.
 
@@ -201,6 +203,8 @@ def compute_daily_loss_analysis(
     """
     df_sorted = df.sort_values(date_col).copy()
     df_sorted["_date"] = df_sorted[date_col].dt.normalize()
+    if utc_mode:
+        df_sorted.loc[df_sorted[date_col].dt.hour >= 21, "_date"] += pd.Timedelta(days=1)
 
     running_balance = initial_balance
     rows = []
@@ -844,6 +848,7 @@ def main():
     include_negatives = st.session_state.get(f"{file_name}_include_neg",  False)
     only_positive     = st.session_state.get(f"{file_name}_only_pos",     False)
     show_above_100    = st.session_state.get(f"{file_name}_above_100",    False)
+    utc_mode          = st.session_state.get(f"{file_name}_utc_mode",     False)
     date_choice       = st.session_state.get(f"{file_name}_date_choice",  "Opening Date")
     filter_date       = st.session_state.get(f"{file_name}_filter_date",  None)
     # inicializa chaves do dashboard (se ainda não existirem)
@@ -860,7 +865,7 @@ def main():
         st.session_state[f"{file_name}_{_dst}"] = st.session_state.get(f"{file_name}_{_src}", 0.0)
 
     # ── Cálculos ────────────────────────────
-    df_agg = aggregate_by_date(df, date_choice)
+    df_agg = aggregate_by_date(df, date_choice, utc_mode=utc_mode)
 
     # Filtro de data para análise de consistência (não afeta saldo nem HWM)
     _df_agg_consistency = (
@@ -903,7 +908,7 @@ def main():
     df_daily_loss = None
     soft_breach_dates: list[str] = []
     if daily_loss_limit and account_value > 0:
-        df_daily_loss = compute_daily_loss_analysis(df, date_choice, account_value, daily_loss_limit)
+        df_daily_loss = compute_daily_loss_analysis(df, date_choice, account_value, daily_loss_limit, utc_mode=utc_mode)
         soft_breach_dates = df_daily_loss.loc[df_daily_loss["Soft Breach"], "Data"].tolist()
 
     tab_params, tab_dash, tab_compare = st.tabs(["⚙️ Consistency Rule", "📊 Dashboard", "🔍 Comparação"])
@@ -1393,7 +1398,7 @@ def main():
 
         # ── Toggles ─────────────────────────────
         st.divider()
-        tog1, tog2, tog3 = st.columns(3)
+        tog1, tog2, tog3, tog4 = st.columns(4)
         with tog1:
             include_negatives = st.toggle(
                 "Incluir dias negativos na regra de %",
@@ -1415,6 +1420,14 @@ def main():
                 value=False,
                 key=f"{file_name}_above_100",
                 help="Exibe uma seção separada listando os dias com PnL consolidado acima de $100.",
+            )
+        with tog4:
+            utc_mode = st.toggle(
+                "Horário UTC",
+                value=False,
+                key=f"{file_name}_utc_mode",
+                help="Trades com horário de fechamento ≥ 21h (local) são contabilizados no dia seguinte, "
+                     "respeitando o limite de meia-noite no fuso UTC+3.",
             )
 
         # ── Métricas ─────────────────────────────
